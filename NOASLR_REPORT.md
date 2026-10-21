@@ -7,8 +7,7 @@
 
 ```php
 <?php
-session_start();
-echo "ok\n";
+echo "OK\n";
 ```
 
 本报告只覆盖 **no-ASLR** 结果。ASLR 的两条路径分析见 `ASLR_PATHS.md`。
@@ -150,7 +149,7 @@ data+0x60: 标记 0x1122334455667788（仅调试用）
 - PHP 配置：`memory_limit=8M`、`session.upload_progress.cleanup=On`、
   `session.upload_progress.enabled=On`、`session.save_path=/tmp`、
   `session.use_strict_mode=0`、`display_errors=On`。
-- webroot 只有普通 `index.php`（`session_start(); echo "ok\n";`）。
+- webroot 只有普通 `index.php`（`echo "OK\n"`，无任何 session 调用）。
 
 请求 A（同目录工具 `send_a_ps.py`）：
 
@@ -232,4 +231,4 @@ SYSTEM rdi=0x7ffff5e6e118 [id>/tmp/p1]
    分配块或修正 nTableMask，使 `HT_GET_DATA_ADDR` 为分配起点。
 4. **依赖 B 的精确 56B/192B 分配顺序**：N1=7、字段名长度 31、L=167/L=55、
    boundary 10 是实测组合；换 PHP 构建/配置/请求顺序需重新校准。
-5. **不涉及应用代码**：目标页面只调用 `session_start()`；触发在 RINIT/解析阶段。
+5. **不涉及应用代码**：目标页面不需要任何 session 调用；触发在 RINIT/解析阶段。

@@ -6,7 +6,7 @@ mod_php + PHP 8.4.26（官方源码自编译、未打补丁）的一组漏洞复
 约束：
 
 - 攻击请求**只用普通 multipart HTTP**；
-- 目标 webroot 只有普通页面（`session_start(); echo "ok\n";`），
+- 目标 webroot 只有普通页面（`<?php echo "OK\n"; ?>`，无 session 调用），
   **不放置任何目标相关 PHP 文件**；
 - 不依赖从目标读取 `/proc/self/maps`；
 - 所有命令执行/泄漏证据来自实验环境。

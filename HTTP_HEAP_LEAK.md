@@ -3,8 +3,7 @@
 日期：2026-10-21
 目标：PHP 8.4.26 + Apache 2.4.68 prefork + mod_php（Debian 12 amd64，`<LAB_HOST>`）
 约束：**完全远程、只用 HTTP；不在目标 webroot 写任何特定 PHP 文件**。目标页面只有
-`session_start(); echo "ok\n";`（当前 lab 的 `/index.php` 为等价的 `echo "OK\n"`，
-本泄漏不依赖脚本内容）。
+`<?php echo "OK\n"; ?>`（无 session 调用；本泄漏不依赖脚本内容）。
 状态：**堆地址（Zend MM 2MB chunk base）泄漏已打通**；libphp/libc **代码指针**泄漏
 尚未完成，下一步见第 7 节。
 

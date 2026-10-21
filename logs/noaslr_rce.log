@@ -2,7 +2,7 @@
 
 日期：2026-10-21
 目标：PHP 8.4.26 + Apache 2.4.68 prefork + mod_php，no-ASLR worker
-约束：纯 HTTP，未在目标 webroot 写任何 PHP；页面为 `session_start(); echo "ok\n";`
+约束：纯 HTTP，未在目标 webroot 写任何 PHP；页面为普通 `echo`（历史记录：当次页面含 `session_start()`；该链不依赖它，已在纯 echo 页面复验）
 
 ## 1. 成功运行的 gdb 关键输出
 

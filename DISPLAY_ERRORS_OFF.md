@@ -3,8 +3,8 @@
 日期：2026-10-21
 目标：PHP 8.4.26 + Apache 2.4.68 prefork + mod_php（`<LAB_HOST>`，
 `display_errors=0`、`memory_limit=8M`、单 worker）
-约束：完全远程、只发普通 multipart HTTP；目标页面仍是
-`session_start(); echo "ok\n";`；不读目标 `/proc`。
+约束：完全远程、只发普通 multipart HTTP；目标页面是
+`<?php echo "OK\n"; ?>`（无 `session_start()`）；不读目标 `/proc`。
 
 ---
 

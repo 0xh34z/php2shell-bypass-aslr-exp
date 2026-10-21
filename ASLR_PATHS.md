@@ -3,7 +3,7 @@
 日期：2026-10-21
 前提：no-ASLR 纯 HTTP RCE 已打通（`NOASLR_REPORT.md`）。
 约束：**完全远程、纯 HTTP；不构造目标侧特定 PHP**。目标页面只有
-`session_start(); echo "ok\n";`。
+普通 `echo`（无 session 调用）。
 
 本文只分析 ASLR 打开后的两条路径，不把旧的自定义 PHP 泄漏/ROP 结果当作有效交付。
 
@@ -203,7 +203,7 @@ NUL 不能绕过 `|` 分隔符。
    再用 `zend_reference`/`stream_bucket_new` 重占，制造 encoder 的 UAF。
 3. 应用调用 `session_encode()` 并把结果输出/保存在可读位置。
 
-当前目标只有 `session_start()`，没有用户态类，也没有 `session_encode()`
+当前目标页面只有普通 `echo`，没有用户态类，也没有 `session_encode()`
 输出；默认 handler 又是 `php`。因此这两条泄漏在本约束下不可达。
 
 ### 3.3 纯 HTTP 下可控的 session 数据面
@@ -230,7 +230,7 @@ session decoder 读到的结构由 PHP 自己生成；没有 attacker 可控的
 | session file 作为泄漏载体 | 需要先有 encoder OOB 写；默认 encoder 没有 |
 | `unserialize` 内置类 handler 的 OOB/警告 | 默认配置无法注入 `O:`/`C:`；progress data 只有数组/字符串 |
 | 错误信息 `%p`/指针格式 | session/unserialize 路径没有 `%p`；只有 enum 的 `%.*s` |
-| `session_start` 警告打印 id/path | 不含内存地址；id 字符受限 |
+| `session_start` 警告打印 id/path（仅在应用调用时才有此候选） | 不含内存地址；id 字符受限 |
 | `/proc/self/maps` | 需要目标侧 PHP 读文件，违反约束 |
 
 ### 3.5 如果允许改 php.ini（不是应用 PHP）
