@@ -1,6 +1,6 @@
 # php2shell — PHP 8.4.26 session 漏洞复现
 
-在“完全远程、只用 HTTP、目标页面无 `session_start()`、不写任何目标侧 PHP”的约束下，用**一个 `exploit.py`** 打通 PHP 8.4.26 + Apache prefork + mod_php 的 RCE。当前版本要求 `display_errors=1`；`display_errors=0` 已打通纯 HTTP 堆泄漏，完整 RCE 稍后提交。
+在“完全远程、只用 HTTP、目标页面无 `session_start()`、不写任何目标侧 PHP”的约束下，用**一个 `exploit.py`** 打通 PHP 8.4.26 + Apache prefork + mod_php 的 RCE。官方 `php:8.4.26-apache` 镜像已实测 **3/3** 一键成功（`PROOF: uid=33(www-data)...`）。当前版本要求 `display_errors=1`；`display_errors=0` 已打通纯 HTTP 堆泄漏，完整 RCE 稍后提交。
 
 ## exp
 
@@ -37,9 +37,9 @@ python3 exploit.py -u http://127.0.0.1:8088/index.php
 |---|---|---|
 | PHP | 8.4.26（NTS，mod_php） | `php:8.4.26-apache` |
 | 基础系统 | Debian 12 (bookworm) | 同上 |
-| Apache | 2.4.62（Debian 12 包） | 同上 |
+| Apache | 2.4.69（官方镜像内 Debian 12 包，实测） | 同上 |
 | MPM | prefork，单 worker | [docker/apache.conf](docker/apache.conf) |
-| lab 报告中的 Apache | 2.4.68（原 lab 自编译） | 若需完全一致，用 [apache/httpd](https://github.com/apache/httpd) 的 2.4.68 tag |
+| lab 报告中的 Apache | 2.4.68（原 lab 自编译，`--profile lab`） | 若需完全一致，用 [apache/httpd](https://github.com/apache/httpd) 的 2.4.68 tag |
 
 官方镜像仓库：[docker-library/php](https://github.com/docker-library/php)（Docker Hub: [`php:8.4.26-apache`](https://hub.docker.com/_/php)）；PHP 源码：[php/php-src](https://github.com/php/php-src)（tag `php-8.4.26`）。
 
@@ -63,11 +63,13 @@ printf 'id; uname -a > /out/p1\n' > out/c
 python3 exploit.py -u http://127.0.0.1:8088/index.php -c 'sh</out/c'
 ```
 
-常用参数：`--cmd`、`--proof-file`、`--fetch`、`--zif-offset`、`--dtor-offset`、`--htdata-offset`、`--no-pre-rotate`、`--retries`。远程目标默认使用 lab 偏移；`--offsets-file ''` 可关闭自动读取，容器名不是 `php2shell-target` 时用 `--docker-container` 指定。
+常用参数：`--profile`、`--cmd`、`--proof-file`、`--fetch`、`--zif-offset`、`--dtor-offset`、`--htdata-offset`、`--no-pre-rotate`、`--retries`。默认 profile 是 `bookworm`（官方镜像）；原 lab 构建用 `--profile lab`。`--offsets-file ''` 可关闭自动读取，容器名不是 `php2shell-target` 时用 `--docker-container` 指定。
+
+bookworm 的堆标定已内置：stage1 filler 数 **841**；stage2 目标数组 **406**、元素值长度 **16**；stage3 `HTDATA=chunk+0x690d8`，A 的 pad 为 6×(31,31)，并额外带 32 字符合法 `Cookie: PHPSESSID`，使 B 复用 stale id（`send_cookie=0`），避免 session 的 `Set-Cookie` 头在 `R0+16` 覆盖 `val.type`；B 用 15B carrier 覆盖 reference 的 `val.value`。官方镜像的 libphp 偏移自动读取为 `zif_system=0x465370`、`zval_ptr_dtor=0x65eb60`；原 lab 用 `0x43a870` / `0x613c50`。
 
 ## 机制概览
 
-漏洞面是 `session.upload_progress` 在 RINIT 之前触发的 session 初始化，以及 OOM bailout 后跨请求残留的悬空指针。
+漏洞面是 `session.upload_progress` 在 RINIT 之前触发的 session 初始化，以及 OOM bailout 后跨请求残留的悬空指针。下面以 lab 构建为例；官方镜像的 bookworm 标定值见 exp 末尾。
 
 整条链的攻击流量全部是普通 multipart HTTP，目标页面只有 `<?php echo "OK\n"; ?>`：
 
@@ -107,12 +109,14 @@ python3 exploit.py -u http://127.0.0.1:8088/index.php -c 'sh</out/c'
 | `libphp+0x613c50` | `ZVAL_PTR_DTOR` |
 | `libphp+0x43a870` | `zif_system` |
 
+上表是 lab 构建（`--profile lab`）。官方镜像（默认 `--profile bookworm`）的对应标定为：stage1 filler 数 **841**；stage2 目标数组 **406**、元素值长度 **16**；stage3 `HTDATA=chunk+0x690d8`，A pad 6×(31,31) 并带 32 字符合法 `Cookie: PHPSESSID`，B 用 15B carrier；libphp 偏移由 `docker/offsets.py` 自动读取（`0x465370` / `0x65eb60`）。
+
 详细机制、gdb 证据与请求校准见 [HTTP_HEAP_LEAK.md](HTTP_HEAP_LEAK.md)（堆泄漏）、[ASLR_PURE_HTTP.md](ASLR_PURE_HTTP.md)（libphp 泄漏与全链）、[DISPLAY_ERRORS_OFF.md](DISPLAY_ERRORS_OFF.md)（不依赖 `display_errors` 的泄漏）、[NOTES.md](NOTES.md)（根因与源码位置）。
 
 ## 复现声明
 
 - **一个 exp 复现全部**：`python3 exploit.py -u ...` 一条命令完成 worker 轮换、堆泄漏、libphp 泄漏和 `zif_system` 执行；不需要目标侧文件、不需要 `session_start()`、不需要本地信号。
 - **纯 HTTP**：攻击流量只有 multipart POST，目标 webroot 只有 `<?php echo "OK\n"; ?>`。
-- **环境**：官方 `php:8.4.26-apache`（PHP 8.4.26 / Debian 12 / Apache 2.4.62 prefork）+ [docker/php.ini](docker/php.ini)、[docker/apache.conf](docker/apache.conf)。lab 报告中的 Apache 2.4.68 与官方镜像的差异：libphp 代码段偏移由 `docker/offsets.py` 自动读取；chunk 内偏移仍是 lab 校准值，必要时用 `--htdata-offset` 重新校准。
+- **环境**：官方 `php:8.4.26-apache`（PHP 8.4.26 / Debian 12 / Apache 2.4.69 prefork）+ [docker/php.ini](docker/php.ini)、[docker/apache.conf](docker/apache.conf)，默认 `--profile bookworm`，实测 **3/3**。原 lab 构建（Apache 2.4.68、最小 PHP）用 `--profile lab`；两套 profile 的 chunk 偏移和 stage3 触发方式已分别标定。
 - **边界**：当前 RCE 要求 `display_errors=1`、`memory_limit=8M`、`max_input_vars=1000`、`session.use_cookies=1`、`session.use_strict_mode=0`、单 worker prefork；`display_errors=0` 的完整 RCE 稍后提交。
 - 仅用于授权环境中的漏洞研究与复现。
