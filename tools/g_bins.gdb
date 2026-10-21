@@ -285,6 +285,31 @@ class InitBP(gdb.Breakpoint):
                 pm = ' '.join('%d:%#x' % (pg, int(ch['map'][pg]))
                               for pg in range(120, 136))
                 gdb.write("PAGEMAP120 %s\n" % (pm,))
+                pm2 = ' '.join('%d:%#x' % (pg, int(ch['map'][pg]))
+                               for pg in range(500, 512))
+                gdb.write("PAGEMAP_ID500 %s\n" % (pm2,))
+                try:
+                    ct = gdb.lookup_type('zend_mm_chunk').pointer()
+                    mc = h['main_chunk']
+                    cb = int(mc)
+                    cc = mc
+                    out = []
+                    for _k in range(16):
+                        out.append('%#x:%d' % (int(cc), int(cc['free_pages'])))
+                        cc = cc['next']
+                        if int(cc) == cb:
+                            break
+                    gdb.write("CHUNKLIST %s\n" % (' '.join(out),))
+                    cache = h['cached_chunks']
+                    out2 = []
+                    for _k in range(8):
+                        if not int(cache):
+                            break
+                        out2.append('%#x:%d' % (int(cache), int(cache['free_pages'])))
+                        cache = cache['next']
+                    gdb.write("CACHEDLIST %s\n" % (' '.join(out2),))
+                except Exception as e:
+                    gdb.write("CHUNKLIST_ERR %r\n" % (e,))
             except Exception as e:
                 gdb.write("FREELISTS_ERR %r\n" % (e,))
         except Exception as e:

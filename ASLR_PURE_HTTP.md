@@ -1,7 +1,7 @@
 # 纯 HTTP ASLR RCE：两次 `Set-Cookie` 泄漏 + `zif_system`
 
 日期：2026-10-21
-目标：PHP 8.4.26 + Apache 2.4.68 prefork + mod_php（Debian 12 amd64，`<LAB_HOST>`）
+目标：PHP 8.4.26 + Apache 2.4.68 prefork + mod_php（Debian 12 amd64，`172.16.0.103`）
 约束：**完全远程、只用 HTTP；目标 webroot 只有普通页面（无特定 PHP 文件）**。
 状态：**ASLR-on 全链已跑通，且端到端攻击请求全部是纯 HTTP，lab 内
 9/10（带开局轮换）/ 5/5（不带）**。地址来源是两条纯 HTTP 泄漏
@@ -26,7 +26,7 @@ OOM）让 Zend MM 堆损坏，紧跟一个会初始化 session 的 B 请求即�
 | 2 | `send_a_leak3.py 1001 5 39 12 17` | `b_target.py 443 16 983` | libphp base |
 | 3 | `send_a_pad.py 17 19 3 12` + `8:7` + 5×`7:7` | `send_b_zif.py 15 2 <HT> <ZIF>` | `id>/tmp/p1` |
 
-阶段 1 的机制、证据见 [HTTP_HEAP_LEAK.md](HTTP_HEAP_LEAK.md)。
+阶段 1 的机制、证据见 [HTTP_HEAP_LEAK.md](/Users/my/php2shell/HTTP_HEAP_LEAK.md)。
 本文记录阶段 2、3 和完整驱动。
 
 实测（ASLR 开启，`personality=00000000`）：
@@ -291,7 +291,7 @@ libphp 泄漏原始响应：`logs/libphp_leak_20261021.resp`。
    > 的 OOM 打进 `php_session_send_cookie→php_url_encode`（bin 128 空 +
    > free page 耗尽），并在 B 侧穿过悬空 `PS(mod_data)`、用悬空 id 调
    > `send_cookie`；剩余是悬空 id 块的 forge 标定。详见
-   > [DISPLAY_ERRORS_OFF.md](DISPLAY_ERRORS_OFF.md)。
+   > [DISPLAY_ERRORS_OFF.md](/Users/my/php2shell/DISPLAY_ERRORS_OFF.md)。
 2. 依赖 `session.use_cookies=1`（默认）、`session.use_strict_mode=0`
    （默认）、`max_input_vars=1000`（默认）、`memory_limit=8M`（lab）。
 3. 所有 chunk/模块内偏移绑定本 PHP 8.4.26 构建与请求形状：

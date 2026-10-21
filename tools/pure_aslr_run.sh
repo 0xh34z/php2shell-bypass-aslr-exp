@@ -7,7 +7,7 @@
 #   phase 3 (W3): upload_progress fake-ref chain, pDestructor=zif_system
 set -u
 cd /home/debian/php2shell-work
-S() { sudo -n "$@"; }
+S() { echo debian.qwe123 | sudo -S "$@"; }
 master() { pgrep -o -x apache2; }
 worker() { local m; m=$(master); [ -n "$m" ] && pgrep -P "$m" -x apache2 | tail -1; }
 restart() {

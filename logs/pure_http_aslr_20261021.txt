@@ -1,4 +1,4 @@
-Pure-HTTP ASLR-on chain, <LAB_HOST>, PHP 8.4.26 + Apache prefork single worker
+Pure-HTTP ASLR-on chain, 172.16.0.103, PHP 8.4.26 + Apache prefork single worker
 Attack requests: HTTP only. Worker rotation between phases is also HTTP:
   A_bigfields (1001 fields x 3000B + 12MB OOM) -> session-initializing B
   -> child exit signal Abort (6) -> prefork respawns a child with the same

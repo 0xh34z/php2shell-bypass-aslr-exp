@@ -30,6 +30,18 @@ TAIL231_N = int(os.environ.get('TAIL231_N', '0'))
 TAIL232_N = int(os.environ.get('TAIL232_N', '0'))
 TAIL232_SAFE = int(os.environ.get('TAIL232_SAFE', '1'))
 NEST_FIRST = int(os.environ.get('NEST_FIRST', '0'))
+NEST_LONGNAME = int(os.environ.get('NEST_LONGNAME', '0'))
+P511 = int(os.environ.get('P511', '0'))
+FREE128_N = int(os.environ.get('FREE128_N', '0'))
+PRE_N = int(os.environ.get('PRE_N', '0'))
+PRE_E = int(os.environ.get('PRE_E', '1'))
+PRE_VL = int(os.environ.get('PRE_VL', '3000'))
+FILL_N = int(os.environ.get('FILL_N', '0'))
+FILL_VL = int(os.environ.get('FILL_VL', '3000'))
+P511_TINY_VL = int(os.environ.get('P511_TINY_VL', '0'))
+TGT_N = int(os.environ.get('TGT_N', '0'))
+TGT_E = int(os.environ.get('TGT_E', '17'))
+TGT_VL = int(os.environ.get('TGT_VL', '1'))
 COOK_N = int(os.environ.get('BCOOK_N', '0'))
 COOK_LEN = int(os.environ.get('BCOOK_LEN', '200'))
 BQ_N = int(os.environ.get('BQ_N', '0'))
@@ -55,8 +67,9 @@ def _mkval(i):
 def _nest_parts():
     out = []
     for _i in range(NEST_N):
+        nm = (('a' * 13 + '%02d' % _i) if NEST_LONGNAME else ('a%d' % _i))
         for _j in range(NEST_E):
-            out.append(('a%d[%d]' % (_i, _j), b'n' * NEST_VL))
+            out.append(('%s[%d]' % (nm, _j), b'n' * NEST_VL))
     return out
 
 parts = []
@@ -64,6 +77,28 @@ if NEST_FIRST:
     parts.extend(_nest_parts())
 for i in range(N):
     parts.append((str(1000 + i), _mkval(i)))
+if P511:
+    for _i in range(FREE128_N):
+        parts.append(('15%03d' % _i, b'F' * 110))
+    for _i in range(PRE_N):
+        nm = str(2000 + _i)
+        for _j in range(PRE_E):
+            parts.append(('%s[%d]' % (nm, _j), b'p' * PRE_VL))
+    p511_bb1 = int(os.environ.get('P511_BB1', '0'))
+    if p511_bb1 > 0:
+        parts.append(('900001', b'P' * p511_bb1))
+    p511_bfp1 = int(os.environ.get('P511_BF_P1', '0'))
+    if p511_bfp1 > 0:
+        D = (510 - p511_bfp1) * 4096
+        parts.append(('900002', b'Q' * D))
+    for _i in range(FILL_N):
+        parts.append(('16%03d' % _i, b'f' * FILL_VL))
+    if P511_TINY_VL > 0:
+        parts.append(('900003', b'T' * P511_TINY_VL))
+    for _i in range(TGT_N):
+        nm = str(3000 + _i)
+        for _j in range(TGT_E):
+            parts.append(('%s[%d]' % (nm, _j), b'n' * TGT_VL))
 if not NEST_FIRST:
     parts.extend(_nest_parts())
 for _i in range(TAIL231_N):

