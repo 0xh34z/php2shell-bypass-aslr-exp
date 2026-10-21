@@ -83,6 +83,10 @@ class SendCookieBP(gdb.Breakpoint):
                 (idp, idlen, int(h['size']), int(h['real_size']),
                  int(h['limit']), total, frees, fs[0], n7, fs[1], n9,
                  fs[2], n11, fs[3], n12, fs[4], n15))
+            try:
+                gdb.execute("x/40gx %#x" % idp)
+            except Exception:
+                pass
             gdb.write("CHUNKADDR %s\n" % (addrs,))
             gdb.write("MAPS=%s\n" % (maps,))
             try:
@@ -257,6 +261,32 @@ class InitBP(gdb.Breakpoint):
             gdb.write("SESSION_INIT id=%s len=%d send_cookie=%d mod=%s "
                       "use_cookies=%d strict=%d%s\n" %
                       (idp, idlen, sc, hex(mod), uc, usm, tail))
+            gdb.write("BIN15_CHAIN_INIT %s\n" % (_bin15_chain(),))
+            try:
+                h = get_heap()
+                heads = []
+                for bn in range(31):
+                    hp = int(h['free_slot'][bn])
+                    if hp:
+                        heads.append('%d:%#x' % (bn, hp))
+                gdb.write("FREELISTS %s\n" % (' '.join(heads),))
+                cnt = 0
+                hp = int(h['free_slot'][6])
+                while hp and cnt < 500:
+                    cnt += 1
+                    try:
+                        hp = int(gdb.parse_and_eval("*(void**)%#x" % hp))
+                    except Exception:
+                        break
+                gdb.write("BIN6_COUNT %d\n" % cnt)
+                ct = gdb.lookup_type('zend_mm_chunk').pointer()
+                base = int(gdb.parse_and_eval("ps_globals.id")) & ~0x1fffff
+                ch = gdb.Value(base).cast(ct)
+                pm = ' '.join('%d:%#x' % (pg, int(ch['map'][pg]))
+                              for pg in range(120, 136))
+                gdb.write("PAGEMAP120 %s\n" % (pm,))
+            except Exception as e:
+                gdb.write("FREELISTS_ERR %r\n" % (e,))
         except Exception as e:
             gdb.write("SESSION_INIT_ERR %r\n" % (e,))
         return False
@@ -332,5 +362,98 @@ ResetBP()
 PanicBP()
 AbortBP()
 SafeErrBP()
+
+
+def _bin15_chain(n=8):
+    try:
+        h = get_heap()
+        p = int(h['free_slot'][15])
+        out = []
+        for _ in range(n):
+            if not p:
+                break
+            out.append(p)
+            try:
+                p = int(gdb.parse_and_eval("*(void**)%#x" % p))
+            except Exception:
+                break
+        return ' '.join(hex(x) for x in out)
+    except Exception as e:
+        return 'ERR %r' % (e,)
+
+class _EmallocRet(gdb.FinishBreakpoint):
+    def __init__(self, sz, ra):
+        super().__init__(internal=True)
+        self._sz = sz
+        self._ra = ra
+    def stop(self):
+        try:
+            rv = int(self.return_value)
+        except Exception:
+            rv = -1
+        gdb.write("EMALLOC sz=%d ra=%#x ret=%#x\n" % (self._sz, self._ra, rv))
+        return False
+
+class _EmallocBP(gdb.Breakpoint):
+    def __init__(self):
+        super().__init__("_emalloc", gdb.BP_BREAKPOINT, internal=True)
+    def stop(self):
+        try:
+            sz = int(gdb.parse_and_eval("$rdi"))
+            if 200 <= sz <= 300:
+                ra = int(gdb.parse_and_eval("*(void**)$rsp"))
+                _EmallocRet(sz, ra)
+        except Exception:
+            pass
+        return False
+
+class _EfreeBP(gdb.Breakpoint):
+    def __init__(self):
+        super().__init__("_efree", gdb.BP_BREAKPOINT, internal=True)
+    def stop(self):
+        try:
+            p = int(gdb.parse_and_eval("$rdi"))
+            off = p - (p & ~0x1fffff)
+            if 0x78000 <= off < 0x88000:
+                gdb.write("EFREE %#x\n" % (p,))
+                try:
+                    idv = int(gdb.parse_and_eval("ps_globals.id"))
+                except Exception:
+                    idv = 0
+                if idv and p == idv:
+                    gdb.write("BIN15_CHAIN_AT_FREE_ID %s\n" % (_bin15_chain(),))
+        except Exception:
+            pass
+        return False
+
+_EmallocBP()
+_EfreeBP()
+
+class _EreallocRet(gdb.FinishBreakpoint):
+    def __init__(self, sz):
+        super().__init__(internal=True)
+        self._sz = sz
+    def stop(self):
+        try:
+            rv = int(self.return_value)
+        except Exception:
+            rv = -1
+        gdb.write("EREALLOC_NULL sz=%d ret=%#x\n" % (self._sz, rv))
+        return False
+
+class _EreallocBP(gdb.Breakpoint):
+    def __init__(self):
+        super().__init__("_erealloc", gdb.BP_BREAKPOINT, internal=True)
+    def stop(self):
+        try:
+            ptr = int(gdb.parse_and_eval("$rdi"))
+            sz = int(gdb.parse_and_eval("$rsi"))
+            if ptr == 0 and 200 <= sz <= 300:
+                _EreallocRet(sz)
+        except Exception:
+            pass
+        return False
+
+_EreallocBP()
 end
 continue

