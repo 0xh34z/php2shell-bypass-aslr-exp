@@ -41,6 +41,31 @@ decoded=4000 ptrs=47 chunk_base=0x7f1416e00000     # ASLR-on
 无 ASLR 3/3、ASLR 开启 2/2（均在确认 `display_errors 0` 的配置下）；失败样本只是未命中 page 511（返回正常
 32 字节 cookie），不崩溃。
 
+### 1.1 目标页面不需要 `session_start`
+
+本轮测试的目标页面是：
+
+```php
+<?php echo "OK\n"; ?>
+```
+
+没有 `session_start()`。整条链仍然成立，因为 session 初始化发生在 RINIT
+之前的 `session.upload_progress` 回调里：
+
+- A：`MULTIPART_EVENT_FILE_START → php_session_rfc1867_update →
+  php_session_initialize()`；
+- B：`MULTIPART_EVENT_END → php_session_rfc1867_cleanup →
+  php_session_initialize()`。
+
+两者都在脚本执行之前，所以页面是否调用 `session_start()` 与漏洞链无关。
+实测（同一无 session 页面）：
+
+- `display_errors=0` 的 forge 泄漏：4000 字节 / 47 个指针，chunk base
+  `0x7ffff3e00000`（证据 `logs/nosession_forge_20261021.resp`）；
+- 旧 `display_errors=1` 阶段 1 泄漏：4096 字节 / 98 个指针，chunk base
+  `0x7ffff5e00000`（证据 `logs/nosession_classic_leak_20261021.resp`）。
+
+
 ---
 
 ## 2. 为什么旧链依赖 `display_errors`

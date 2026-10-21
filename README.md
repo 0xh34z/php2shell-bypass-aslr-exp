@@ -67,6 +67,16 @@ mod_php + PHP 8.4.26（官方源码自编译、未打补丁）的一组漏洞复
 
 详见 [DISPLAY_ERRORS_OFF.md](DISPLAY_ERRORS_OFF.md)。
 
+### 1.4 目标页面不需要 `session_start`（已验证）
+
+目标 `index.php` 仅为 `<?php echo "OK\n"; ?>`，没有任何 session 调用。
+session 由 `session.upload_progress` 的 pre-RINIT 回调初始化（A 的
+`FILE_START`、B 的 `MULTIPART_EVENT_END` cleanup），发生在脚本执行之前，
+因此与页面是否调用 `session_start()` 无关。`display_errors=0` 的 page-511
+forge 泄漏和旧 `display_errors=1` 阶段 1 泄漏都在该页面上成功（证据：
+`logs/nosession_forge_20261021.resp`、`logs/nosession_classic_leak_20261021.resp`）。
+
+
 ---
 
 ## 2. 机制概览
