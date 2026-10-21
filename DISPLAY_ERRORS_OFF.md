@@ -356,20 +356,53 @@ ASLR_ON=1 BN=160 BVL=231 BB1_LEN=1048551 BF_P1=256 BF_READ=4000 \
 
 ## 6. 剩余工程（stage-2/3）
 
-堆泄漏完成后，后续阶段仍是地址标定问题：
+### 6.1 stage-2 的精确约束（display_errors=0）
 
-1. **libphp 泄漏**：需要一个 A/B 形状，使悬空 `PS(id)` 落在 B 的
-   HashTable 上（旧链用 `a0443` 的 `nTableSize|nInternalPointer` 做 len，
-   `pDestructor` 落在数据区）。在新 OOM-in-cookie 流程里，`PS(id)` 固定在
-   cached chunk 的 page 511；可以让 B 把目标 HashTable 的 arData 铺到该页，
-   或换一个 A 形状把 id 放到另一个“最后 free page”。两者都需要重新标定
-   A 的 NB/BL/X 与 B 的铺页参数。
-2. **stage-3**：`zif_system` 终端（`pDestructor=zif_system`，fake
-   execute_data）不依赖 libc，只要知道 chunk base 和 libphp base 即可复用
-   `send_b_zif.py`；需要按 `display_errors=0` 的 A（OOM-in-cookie）重新
-   校准 `PS(id)` 落点。
-3. **全链**：把新的 A/B 参数接进 `pure_aslr_run.sh`，跑
-   `display_errors=0` 的端到端复现并记录成功率。
+stage-2 要读的是真实 HashTable：
+
+```text
+PS(id)+0x10 = HT+0x20 = nTableSize | nInternalPointer   -> len
+PS(id)+0x18 = HT+0x28 = nNextFreeElement                -> 数据第 1 个 qword
+PS(id)+0x20 = HT+0x30 = pDestructor (libphp+0x613c50)    -> 数据第 2 个 qword
+```
+
+因此要么 `PS(id) = HT+0x10`，要么用 page-511 forge 把 len 改大、
+让读窗口覆盖后面的真实 HashTable。
+
+当前 0 链的 `PS(id)` 是 cached id chunk 的**最后一页**（page 511，
+`chunk+0x1ff000`）。读窗口从 `PS(id)+0x18` 到页尾，最多约 0xF E8 字节，
+**不能越出这个 chunk**（后面的地址未映射）。所以：
+
+1. 真实 HashTable 必须落在 page 511 内；
+2. page 511 只能承载**一种 bin 的 run**：要么是 bin-56（HashTable
+   结构体，56B），要么是承载 forge 的大对象，不能两者共存；
+3. 若 page 511 做 bin-56 run：slot 0 放一个已释放的 55B raw buffer
+   （+0x10 = 伪造 len，+0x18 = 数据），slot 1 放真实 HashTable
+   （pDestructor 在 page+0x68），读窗口刚好覆盖；
+4. 但这个 1 页 run 只有在**主 chunk 没有空闲页**时才会落到 id chunk 的
+   page 511；当前 B 的主 chunk 仍有 370 个 free page，1 页 run 会优先
+   落在主 chunk。
+
+### 6.2 已做的实验
+
+- **晚期大字段**：在 X trimmer 前插一个 50/100 页的字段，其 raw buffer
+  释放后尝试在主 chunk 留洞。实测 NB=235 时直接 OOM；NB=215/208 时能到
+  `send_cookie`，但 id 仍在 0x3e/0x3d chunk，`url_encode` 也没有落在
+  OOM 点（free_pages > 0）。原因是 raw 的 2 份存活拷贝把稳态内存顶满，
+  raw 释放的页不足以成为唯一的最后一页。
+- **arData 513 次扩容**：把第 513 次 insert 推到 X 尾部会 OOM（需要
+  10 页连续空间）；推到 bigs 中段又会把旧 arData 的 4 页洞被后续
+  big 的 4 页拷贝精确吃掉。
+- **结论**：要完成 stage-2，需要显式的“主 chunk 用存活拷贝铺满 +
+  id chunk 留 page 511 + bin-56 run 落 511”三段式堆整形；这是下一步的
+  标定工作，不是调一个参数能解决的。
+
+### 6.3 stage-3
+
+`zif_system` 终端（`pDestructor=zif_system`，fake execute_data）不依赖
+libc；一旦 stage-2 给出 libphp base，可直接复用 `send_b_zif.py` 的
+payload，只需按 0 链的 A/B 形状重新标定 fake HT 地址与 fake-ref 落点。
+
 
 ## 7. 文件与命令
 

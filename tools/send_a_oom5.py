@@ -29,6 +29,7 @@ F, S, NB, BL, X, K, KL, FL = map(int, sys.argv[1:9])
 FN = sys.argv[9] if len(sys.argv) > 9 else 'F' * FL
 AQ_N = int(os.environ.get('AQ_N', '0'))
 AQ_LEN = int(os.environ.get('AQ_LEN', '200'))
+LATE_LEN = int(os.environ.get('LATE_LEN', '0'))
 assert F + S + NB + X + K + 2 <= 1000, "too many vars for max_input_vars=1000"
 
 BND = b'S' * 17
@@ -48,6 +49,8 @@ idx = 1000
 for _ in range(NB):
     parts.append((str(idx), None, b'B' * BL))
     idx += 1
+if LATE_LEN > 0:
+    parts.append(('999998', None, b'L' * LATE_LEN))
 idx = 100000
 for _ in range(X):
     parts.append((str(idx), None, b'X' * 231))
