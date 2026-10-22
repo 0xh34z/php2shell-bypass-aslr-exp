@@ -292,7 +292,7 @@ B: send_b_rce2.py 16 2 0x7ffff5e6e0d8 0x7ffff7d14490 "id>/tmp/p1"
 > 嵌套数组，把 `$_POST['a0443']` 的 HashTable 扩到 16 个元素。`PS(id)+0x10` 读到
 > `nTableSize=16`，数据区覆盖 `nNextFreeElement` 和 `pDestructor`
 > （`ZVAL_PTR_DTOR = libphp+0x613c50`）。完整链路、payload 和驱动见
-> [ASLR_PURE_HTTP.md](/Users/my/php2shell/ASLR_PURE_HTTP.md)。以下保留原始分析。
+> [ASLR_PURE_HTTP.md](ASLR_PURE_HTTP.md)。以下保留原始分析。
 
 目标：拿到一个 libphp 代码地址（例如 HashTable 的
 `pDestructor = ZVAL_PTR_DTOR`），配合已知 chunk base 使用 g18 的

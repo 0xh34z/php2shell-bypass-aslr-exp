@@ -60,7 +60,7 @@ sleep 1
 
 # 3) B
 cd "$R" || exit 1
-python3 de0/cheap_oom_a.py --port "$PORT" --parts "$BPARTS" --sid "$BSID" \
+python3 pure/cheap_oom_a.py --port "$PORT" --parts "$BPARTS" --sid "$BSID" \
   --progress "$BPROG" ${BVL:+--nest-value-len "$BVL"} 2>/dev/null || true
 sleep 1.5
 $DOCKER exec "$NAME" pkill -f "gdb -q -p" >/dev/null 2>&1 || true

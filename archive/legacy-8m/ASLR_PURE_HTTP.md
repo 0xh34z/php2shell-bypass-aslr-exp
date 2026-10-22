@@ -26,7 +26,7 @@ OOM）让 Zend MM 堆损坏，紧跟一个会初始化 session 的 B 请求即�
 | 2 | `send_a_leak3.py 1001 5 39 12 17` | `b_target.py 443 16 983` | libphp base |
 | 3 | `send_a_pad.py 17 19 3 12` + `8:7` + 5×`7:7` | `send_b_zif.py 15 2 <HT> <ZIF>` | `id>/tmp/p1` |
 
-阶段 1 的机制、证据见 [HTTP_HEAP_LEAK.md](/Users/my/php2shell/HTTP_HEAP_LEAK.md)。
+阶段 1 的机制、证据见 [HTTP_HEAP_LEAK.md](HTTP_HEAP_LEAK.md)。
 本文记录阶段 2、3 和完整驱动。
 
 实测（ASLR 开启，`personality=00000000`）：
