@@ -1,14 +1,20 @@
 #!/bin/bash
 # Isolated lab target: official php:8.4.26-apache + stock php.ini-production.
 #
+# Default: the image's own prefork configuration (official workers:
+# StartServers 5 / MaxRequestWorkers 150).  The exploit pins one child by
+# holding MaxRequestWorkers-1 partial requests open, so run it with
+# `--workers 150` (the default).
+#
 # The target keeps the official config untouched:
-#   display_errors=Off, memory_limit=128M, post_max_size=8M, single prefork worker.
+#   display_errors=Off, memory_limit=128M, post_max_size=8M.
 # The exploit path is HTTP only; gdb is not required and is not used.
 #
 # Container: p2s-pure-18110, port 18110, workspace ./out (proof files).
 #
 # usage:
-#   ./run_pure.sh             # recreate the container with php:8.4.26-apache
+#   ./run_pure.sh             # official workers, stock official image
+#   ./run_pure.sh --single    # mount docker/apache.conf (one worker)
 #   ./run_pure.sh --dbg       # same build with symbols + gdb (calibration only)
 #   IMAGE=... ./run_pure.sh   # explicit image override
 set -eu
@@ -27,20 +33,33 @@ IMAGE=${IMAGE:-php:8.4.26-apache}
 NAME=${NAME:-p2s-pure-18110}
 PORT=${PORT:-18110}
 CAP=""
+SINGLE=0
+MOUNT=""
 
-if [ "${1:-}" = "--dbg" ]; then
-  IMAGE=${IMAGE_DBG:-php2shell-dbg:gdb}
-  CAP="--cap-add=SYS_PTRACE"
-fi
+for arg in "$@"; do
+  case "$arg" in
+    --dbg)
+      IMAGE=${IMAGE_DBG:-php2shell-dbg:gdb}
+      CAP="--cap-add=SYS_PTRACE"
+      ;;
+    --single)
+      SINGLE=1
+      MOUNT="-v $R/docker/apache.conf:/etc/apache2/conf-enabled/zz-p2s.conf:ro"
+      ;;
+    *)
+      echo "usage: $0 [--dbg] [--single]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 # shellcheck disable=SC2086
 $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
 mkdir -p "$R/out"
 
 # shellcheck disable=SC2086
-$DOCKER run -d --name "$NAME" $CAP \
+$DOCKER run -d --name "$NAME" $CAP $MOUNT \
   -p "127.0.0.1:$PORT:80" \
-  -v "$R/docker/apache.conf:/etc/apache2/conf-enabled/zz-p2s.conf:ro" \
   -v "$R/docker/www:/var/www/html:ro" \
   -v "$R/out:/out" \
   "$IMAGE" /bin/sh -c \
@@ -58,3 +77,11 @@ echo "target: $(curl -s -m 3 "http://127.0.0.1:$PORT/index.php")"
 $DOCKER exec "$NAME" php -v | head -1
 $DOCKER exec "$NAME" php -i 2>/dev/null | \
   grep -E '^display_errors|^display_startup_errors|^memory_limit|^post_max_size|^output_buffering|^session.sid_length|^session.use_strict_mode|^session.save_path|^max_file_uploads|^max_input_vars|^max_multipart_body_parts' | head -20
+echo "--- MPM:"
+if [ "$SINGLE" = 1 ]; then
+  echo "workers: 1 (docker/apache.conf; run exploit with --workers 1)"
+else
+  $DOCKER exec "$NAME" sh -c \
+    "grep -v '^#' /etc/apache2/mods-enabled/mpm_prefork.conf | sed '/^$/d'"
+  echo "workers: official (run exploit with --workers 150)"
+fi

